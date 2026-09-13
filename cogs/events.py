@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -35,6 +36,29 @@ DEFAULT_POLL_HOURS = 24
 VOICE_OPEN_MINUTES = 15
 MAX_SLOTS_LIMIT = 99
 EVENT_BANNER = "<:E1:1546897508738007081><:E2:1546897546964639754><:E3:1546897578719973377><:E4:1546897598022029368><:E5:1546897622453854238><:E6:1546897645786890374><:E7:1546897666355494963>"
+
+EVENT_EMOJI = "<:events:1547854148601643008>"
+GAMES_EMOJI = "<:gamesbutton:1547854165097717801>"
+TIME_EMOJI = "<:tijd:1547854182298550373>"
+SETTINGS_EMOJI = "<:instellingen:1547854198698287165>"
+VOICE_EMOJI = "<:voice:1547737205429243924>"
+USER_EMOJI = "<:user:1547737210986692679>"
+LIST_EMOJI = "<:list:1547733039361163427>"
+
+SUCCESS_EMOJI = "<:success:1547724072090079313>"
+ERROR_EMOJI = "<:error:1547724070252974131>"
+WARNING_EMOJI = "<:warning:1547724067568746526>"
+INFO_EMOJI = "<:info:1547724036107149413>"
+
+ADD_EMOJI = "<:add:1547724100812931072>"
+EDIT_EMOJI = "<:edit:1547724058894934116>"
+DELETE_EMOJI = "<:delete:1547724056768286750>"
+REFRESH_EMOJI = "<:refresh:1547724055426244618>"
+BACK_EMOJI = "<:back:1547724054038052966>"
+LOCK_EMOJI = "<:lock:1547724040888786966>"
+NONE_EMOJI = "<:none:1547724038955208794>"
+
+logger = logging.getLogger(__name__)
 
 STATUS_PLANNING = "planning"
 STATUS_CONFIRMED = "confirmed"
@@ -129,413 +153,2338 @@ def status_label(status: str) -> str:
     }.get(status, status.title())
 
 
+
+def component_emoji(
+    value: str | None,
+) -> discord.PartialEmoji | None:
+    if not value:
+        return None
+
+    try:
+        emoji = discord.PartialEmoji.from_str(value)
+    except Exception:
+        logger.warning(
+            "Kon custom emoji niet parsen: %s",
+            value,
+        )
+        return None
+
+    return emoji if emoji.name else None
+
+
+def feedback_style(
+    kind: str,
+) -> tuple[str, str, discord.Colour]:
+    if kind == "success":
+        return (
+            "Gelukt",
+            SUCCESS_EMOJI,
+            discord.Colour.from_rgb(87, 242, 135),
+        )
+
+    if kind == "error":
+        return (
+            "Fout",
+            ERROR_EMOJI,
+            discord.Colour.from_rgb(237, 66, 69),
+        )
+
+    if kind == "warning":
+        return (
+            "Let op",
+            WARNING_EMOJI,
+            discord.Colour.from_rgb(254, 231, 92),
+        )
+
+    return (
+        "Informatie",
+        INFO_EMOJI,
+        BRAND_COLOR,
+    )
+
+
 @dataclass(slots=True)
 class WizardState:
     guild_id: int
     author_id: int
     channel_id: int
+    event_type: str = "Game Night"
     game_name: str | None = None
     game_role_id: int | None = None
     description: str = ""
     duration_minutes: int = DEFAULT_DURATION_MINUTES
     max_slots: int = 0
     time_options: list[datetime] = field(default_factory=list)
+    game_options: list[tuple[str, int | None]] = field(default_factory=list)
     temporary_voice: bool = True
 
 
 # =========================================================
-# SETUP WIZARD
+# COMPONENTS V2 / SETUP MODALS
 # =========================================================
 
 
-class ActivitySelect(discord.ui.Select):
-    def __init__(self, cog: "Events", state: WizardState, guild: discord.Guild):
+EVENT_TYPES: tuple[tuple[str, str, str], ...] = (
+    (
+        "Game Night",
+        "game_night",
+        "Meerdere games op één avond, eventueel met game-stemming.",
+    ),
+    (
+        "Casual Gaming",
+        "casual",
+        "Relaxed samen gamen zonder competitieve insteek.",
+    ),
+    (
+        "Party Games",
+        "party",
+        "Party games zoals Among Us, PEAK of Pummel Party.",
+    ),
+    (
+        "Competitive",
+        "competitive",
+        "Ranked, toernooi of een serieuzere speelsessie.",
+    ),
+    (
+        "Community Event",
+        "community",
+        "Een bredere serveractiviteit of community-avond.",
+    ),
+    (
+        "Anders",
+        "other",
+        "Voor een event dat niet in de andere types past.",
+    ),
+)
+
+EVENT_TYPE_BY_VALUE = {
+    value: label
+    for label, value, _ in EVENT_TYPES
+}
+
+EVENT_TYPE_VALUE_BY_LABEL = {
+    label: value
+    for label, value, _ in EVENT_TYPES
+}
+
+
+class FeedbackView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: str = "info",
+        title: str | None = None,
+        footer: str | None = None,
+    ):
+        super().__init__(timeout=180)
+
+        default_title, icon, accent = feedback_style(
+            kind
+        )
+
+        lines = [
+            f"> └ {line}"
+            for line in message.splitlines()
+            if line.strip()
+        ]
+
+        children: list[discord.ui.Item] = [
+            discord.ui.TextDisplay(
+                f"# {icon} {title or default_title}\n"
+                + "\n".join(lines)
+            )
+        ]
+
+        if footer:
+            children.extend(
+                [
+                    discord.ui.Separator(
+                        visible=True,
+                        spacing=discord.SeparatorSpacing.small,
+                    ),
+                    discord.ui.TextDisplay(
+                        f"-# {footer}"
+                    ),
+                ]
+            )
+
+        self.add_item(
+            discord.ui.Container(
+                *children,
+                accent_colour=accent,
+            )
+        )
+
+
+class EventSetupModal(discord.ui.Modal):
+    """First setup page: event identity, games and general behaviour."""
+
+    def __init__(
+        self,
+        cog: "Events",
+        state: WizardState,
+        guild: discord.Guild,
+    ):
+        super().__init__(
+            title="Event maken"
+        )
+
         self.cog = cog
         self.state = state
-        options: list[discord.SelectOption] = []
-        for name, role_id in cog.active_games(guild)[:24]:
-            options.append(discord.SelectOption(label=truncate(name, 100), value=f"game:{role_id}"))
-        options.append(discord.SelectOption(label="Aangepaste activiteit", value="custom", description="Gebruik een eigen naam."))
-        super().__init__(placeholder="Kies een game of activiteit", min_values=1, max_values=1, options=options, row=0)
 
-    async def callback(self, interaction: discord.Interaction) -> None:
-        if self.values[0] == "custom":
-            await interaction.response.send_modal(CustomActivityModal(self.cog, self.state))
+        self.name = discord.ui.TextInput(
+            label="Event naam",
+            placeholder="Bijv. Party Game Night",
+            required=False,
+            default=state.game_name or None,
+            max_length=100,
+        )
+
+        self.description = discord.ui.TextInput(
+            label="Beschrijving",
+            placeholder="Wat gaan jullie doen?",
+            style=discord.TextStyle.paragraph,
+            required=False,
+            default=state.description or None,
+            max_length=1000,
+        )
+
+        selected_type = (
+            EVENT_TYPE_VALUE_BY_LABEL.get(
+                state.event_type,
+                "game_night",
+            )
+        )
+
+        self.event_type = discord.ui.RadioGroup(
+            required=True,
+            options=[
+                discord.RadioGroupOption(
+                    label=label,
+                    value=value,
+                    description=description,
+                    default=(
+                        value == selected_type
+                    ),
+                )
+                for label, value, description
+                in EVENT_TYPES
+            ],
+        )
+
+        selected_game_ids = {
+            role_id
+            for _, role_id
+            in state.game_options
+            if role_id is not None
+        }
+
+        games = cog.active_games(
+            guild
+        )[:25]
+
+        self.games_select = None
+
+        if games:
+            self.games_select = discord.ui.Select(
+                placeholder="Kies games (optioneel)",
+                min_values=0,
+                max_values=min(
+                    10,
+                    len(games),
+                ),
+                required=False,
+                options=[
+                    discord.SelectOption(
+                        label=truncate(
+                            name,
+                            100,
+                        ),
+                        value=str(role_id),
+                        default=(
+                            role_id
+                            in selected_game_ids
+                        ),
+                    )
+                    for name, role_id in games
+                ],
+            )
+
+        self.options = discord.ui.CheckboxGroup(
+            required=False,
+            min_values=0,
+            max_values=1,
+            options=[
+                discord.CheckboxGroupOption(
+                    label="Tijdelijk voicekanaal maken",
+                    value="temporary_voice",
+                    description=(
+                        "Wordt 15 minuten voor de start geopend "
+                        "en na afloop opgeruimd."
+                    ),
+                    default=state.temporary_voice,
+                )
+            ],
+        )
+
+        self.add_item(
+            self.name
+        )
+        self.add_item(
+            self.description
+        )
+        self.add_item(
+            discord.ui.Label(
+                text="Type event",
+                description=(
+                    "Dit beschrijft de soort avond; "
+                    "de games kies je hieronder apart."
+                ),
+                component=self.event_type,
+            )
+        )
+
+        if self.games_select is not None:
+            self.add_item(
+                discord.ui.Label(
+                    text="Games",
+                    description=(
+                        "Kies actieve games. Staat je game er niet bij? "
+                        "Voeg die daarna toe via Anders / eigen games."
+                    ),
+                    component=self.games_select,
+                )
+            )
+
+        self.add_item(
+            discord.ui.Label(
+                text="Extra opties",
+                description=(
+                    "Algemene opties voor het event."
+                ),
+                component=self.options,
+            )
+        )
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
+        if interaction.guild is None:
+            await self.cog.send_feedback(
+                interaction,
+                "Server niet gevonden.",
+                kind="error",
+            )
             return
-        role_id = int(self.values[0].split(":", 1)[1])
-        role = interaction.guild.get_role(role_id) if interaction.guild else None
-        if role is None:
-            await interaction.response.send_message("Deze game bestaat niet meer.", ephemeral=True)
-            return
-        self.state.game_name = role.name.removeprefix("◆").strip()
-        self.state.game_role_id = role.id
-        await interaction.response.edit_message(embed=self.cog.wizard_embed(self.state), view=SetupWizardView(self.cog, self.state))
 
+        type_value = (
+            self.event_type.value
+            or "game_night"
+        )
 
-class CustomActivityModal(discord.ui.Modal, title="Aangepaste activiteit"):
-    name = discord.ui.TextInput(label="Naam", placeholder="Bijv. Filmavond", max_length=100)
-    description = discord.ui.TextInput(label="Beschrijving", placeholder="Optioneel", style=discord.TextStyle.paragraph, required=False, max_length=1000)
+        self.state.event_type = (
+            EVENT_TYPE_BY_VALUE.get(
+                type_value,
+                "Game Night",
+            )
+        )
 
-    def __init__(self, cog: "Events", state: WizardState):
-        super().__init__()
-        self.cog = cog
-        self.state = state
+        custom_name = str(
+            self.name
+        ).strip()
 
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        self.state.game_name = str(self.name).strip()
+        self.state.game_name = (
+            custom_name
+            or self.state.event_type
+        )
+
         self.state.game_role_id = None
-        if str(self.description).strip():
-            self.state.description = str(self.description).strip()
-        await interaction.response.edit_message(embed=self.cog.wizard_embed(self.state), view=SetupWizardView(self.cog, self.state))
+        self.state.description = str(
+            self.description
+        ).strip()
+
+        self.state.temporary_voice = (
+            "temporary_voice"
+            in set(
+                self.options.values
+                or []
+            )
+        )
+
+        choices: list[
+            tuple[str, int | None]
+        ] = []
+
+        if self.games_select is not None:
+            for raw_id in (
+                self.games_select.values
+            ):
+                role = interaction.guild.get_role(
+                    int(raw_id)
+                )
+
+                if role is not None:
+                    choices.append(
+                        (
+                            role.name
+                            .removeprefix("◆")
+                            .strip(),
+                            role.id,
+                        )
+                    )
+
+        # Eigen handmatig ingevoerde game-opties blijven behouden wanneer
+        # iemand later alleen de basis van het event opnieuw aanpast.
+        custom_choices = [
+            (
+                name,
+                None,
+            )
+            for name, role_id
+            in self.state.game_options
+            if role_id is None
+        ]
+
+        self.state.game_options = (
+            choices
+            + custom_choices
+        )
+
+        view = SetupContinueView(
+            self.cog,
+            self.state,
+        )
+
+        if interaction.message is not None:
+            await interaction.response.edit_message(
+                content=None,
+                embed=None,
+                view=view,
+            )
+        else:
+            await interaction.response.send_message(
+                view=view,
+                ephemeral=True,
+            )
 
 
-class EventInfoModal(discord.ui.Modal, title="Event instellingen"):
-    description = discord.ui.TextInput(label="Beschrijving", required=False, style=discord.TextStyle.paragraph, max_length=1000)
-    duration = discord.ui.TextInput(label="Duur in minuten", default=str(DEFAULT_DURATION_MINUTES), max_length=4)
-    max_slots = discord.ui.TextInput(label="Max. deelnemers", placeholder="0 = onbeperkt", default="0", max_length=2)
 
-    def __init__(self, cog: "Events", state: WizardState):
-        super().__init__()
+class CustomGamesModal(discord.ui.Modal):
+    """Allow event creators to add games that are not active server games."""
+
+    def __init__(
+        self,
+        cog: "Events",
+        state: WizardState,
+    ):
+        super().__init__(
+            title="Andere games"
+        )
+
         self.cog = cog
         self.state = state
-        self.description.default = state.description or None
-        self.duration.default = str(state.duration_minutes)
-        self.max_slots.default = str(state.max_slots)
 
-    async def on_submit(self, interaction: discord.Interaction) -> None:
+        current_custom = [
+            name
+            for name, role_id
+            in state.game_options
+            if role_id is None
+        ]
+
+        self.games = discord.ui.TextInput(
+            label="Eigen game-opties",
+            placeholder=(
+                "Bijv. Helldivers 2, Lethal Company, Mario Kart"
+            ),
+            style=discord.TextStyle.paragraph,
+            required=False,
+            default=(
+                "\n".join(
+                    current_custom
+                )
+                or None
+            ),
+            max_length=1000,
+        )
+
+        self.add_item(
+            self.games
+        )
+
+    @staticmethod
+    def parse_games(
+        raw: str,
+    ) -> list[str]:
+        values = [
+            value.strip()
+            for value in re.split(
+                r"[\n,;]+",
+                raw,
+            )
+            if value.strip()
+        ]
+
+        result: list[str] = []
+        seen: set[str] = set()
+
+        for value in values:
+            cleaned = truncate(
+                value,
+                100,
+            )
+            key = cleaned.casefold()
+
+            if key in seen:
+                continue
+
+            seen.add(
+                key
+            )
+            result.append(
+                cleaned
+            )
+
+        return result
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
+        custom_games = self.parse_games(
+            str(
+                self.games
+            )
+        )
+
+        active_choices = [
+            (
+                name,
+                role_id,
+            )
+            for name, role_id
+            in self.state.game_options
+            if role_id is not None
+        ]
+
+        active_names = {
+            name.casefold()
+            for name, _
+            in active_choices
+        }
+
+        # Een handmatige optie die hetzelfde heet als een gekozen actieve game
+        # hoeft niet dubbel in de stemming te verschijnen.
+        custom_games = [
+            name
+            for name in custom_games
+            if name.casefold()
+            not in active_names
+        ]
+
+        total = (
+            len(active_choices)
+            + len(custom_games)
+        )
+
+        if total > 10:
+            await self.cog.send_feedback(
+                interaction,
+                (
+                    "Een event ondersteunt maximaal **10 game-opties**.\n"
+                    f"Je hebt nu **{len(active_choices)} actieve games** "
+                    f"en **{len(custom_games)} eigen opties** geselecteerd."
+                ),
+                kind="error",
+                title="Te veel games",
+            )
+            return
+
+        self.state.game_options = (
+            active_choices
+            + [
+                (
+                    name,
+                    None,
+                )
+                for name in custom_games
+            ]
+        )
+
+        view = SetupContinueView(
+            self.cog,
+            self.state,
+        )
+
+        if interaction.message is not None:
+            await interaction.response.edit_message(
+                content=None,
+                embed=None,
+                view=view,
+            )
+        else:
+            await interaction.response.send_message(
+                view=view,
+                ephemeral=True,
+            )
+
+
+class SetupActionButton(discord.ui.Button):
+    def __init__(
+        self,
+        owner_view: "SetupContinueView",
+        action: str,
+        label: str,
+        *,
+        emoji: str | None = None,
+        style: discord.ButtonStyle = (
+            discord.ButtonStyle.secondary
+        ),
+    ):
+        super().__init__(
+            label=label,
+            emoji=component_emoji(
+                emoji
+            ),
+            style=style,
+        )
+
+        self.owner_view = owner_view
+        self.action = action
+
+    async def callback(
+        self,
+        interaction: discord.Interaction,
+    ):
+        if self.action == "edit":
+            if interaction.guild is None:
+                await self.owner_view.cog.send_feedback(
+                    interaction,
+                    "Server niet gevonden.",
+                    kind="error",
+                )
+                return
+
+            await interaction.response.send_modal(
+                EventSetupModal(
+                    self.owner_view.cog,
+                    self.owner_view.state,
+                    interaction.guild,
+                )
+            )
+            return
+
+        if self.action == "custom_games":
+            await interaction.response.send_modal(
+                CustomGamesModal(
+                    self.owner_view.cog,
+                    self.owner_view.state,
+                )
+            )
+            return
+
+        if self.action == "planning":
+            await interaction.response.send_modal(
+                EventPlanningModal(
+                    self.owner_view.cog,
+                    self.owner_view.state,
+                )
+            )
+
+
+class SetupContinueView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        cog: "Events",
+        state: WizardState,
+        *,
+        published: bool = False,
+        event_id: int | None = None,
+    ):
+        super().__init__(
+            timeout=900
+            if not published
+            else 180
+        )
+
+        self.cog = cog
+        self.state = state
+
+        children: list[discord.ui.Item] = [
+            discord.ui.TextDisplay(
+                cog.wizard_text(
+                    state,
+                    published=published,
+                    event_id=event_id,
+                )
+            )
+        ]
+
+        if not published:
+            children.extend(
+                [
+                    discord.ui.Separator(
+                        visible=True,
+                        spacing=discord.SeparatorSpacing.small,
+                    ),
+                    discord.ui.ActionRow(
+                        SetupActionButton(
+                            self,
+                            "edit",
+                            "Event aanpassen",
+                            emoji=EDIT_EMOJI,
+                        ),
+                        SetupActionButton(
+                            self,
+                            "custom_games",
+                            "Anders / eigen games",
+                            emoji=GAMES_EMOJI,
+                            style=(
+                                discord.ButtonStyle.primary
+                            ),
+                        ),
+                        SetupActionButton(
+                            self,
+                            "planning",
+                            "Planning & publiceren",
+                            emoji=TIME_EMOJI,
+                            style=(
+                                discord.ButtonStyle.success
+                            ),
+                        ),
+                    ),
+                    discord.ui.TextDisplay(
+                        "-# Staat een game niet tussen de actieve games? "
+                        "Gebruik **Anders / eigen games** en typ zelf "
+                        "één of meer opties."
+                    ),
+                ]
+            )
+
+        self.add_item(
+            discord.ui.Container(
+                *children,
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+    async def interaction_check(
+        self,
+        interaction: discord.Interaction,
+    ) -> bool:
+        if interaction.user.id == (
+            self.state.author_id
+        ):
+            return True
+
+        await self.cog.send_feedback(
+            interaction,
+            "Deze eventsetup is niet van jou.",
+            kind="error",
+        )
+        return False
+
+
+class EventPlanningModal(discord.ui.Modal):
+    """Second setup page: date, time, duration and capacity, then publish."""
+
+    def __init__(
+        self,
+        cog: "Events",
+        state: WizardState,
+    ):
+        super().__init__(
+            title="Planning & publiceren"
+        )
+
+        self.cog = cog
+        self.state = state
+
+        date_default = None
+        times_default = None
+
+        if state.time_options:
+            first = (
+                state.time_options[0]
+                .astimezone(AMSTERDAM)
+            )
+
+            date_default = first.strftime(
+                "%d-%m-%Y"
+            )
+
+            times_default = ", ".join(
+                dt.astimezone(AMSTERDAM)
+                .strftime("%H:%M")
+                for dt in state.time_options[:10]
+            )
+
+        self.date = discord.ui.TextInput(
+            label="Datum",
+            placeholder="12-09-2026",
+            default=date_default,
+            max_length=10,
+        )
+
+        self.times = discord.ui.TextInput(
+            label="Tijd(en)",
+            placeholder=(
+                "20:00  of  20:00, 21:00, 22:00"
+            ),
+            default=times_default,
+            max_length=80,
+        )
+
+        duration_values = (
+            60,
+            90,
+            120,
+            180,
+            240,
+            360,
+        )
+
+        self.duration = discord.ui.Select(
+            placeholder="Kies de duur",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(
+                    label=human_duration(
+                        minutes
+                    ),
+                    value=str(minutes),
+                    default=(
+                        minutes
+                        == state.duration_minutes
+                    ),
+                )
+                for minutes
+                in duration_values
+            ],
+        )
+
+        self.max_slots = discord.ui.TextInput(
+            label="Max. deelnemers",
+            placeholder="0 = onbeperkt",
+            default=str(
+                state.max_slots
+            ),
+            max_length=2,
+        )
+
+        self.add_item(
+            self.date
+        )
+        self.add_item(
+            self.times
+        )
+        self.add_item(
+            discord.ui.Label(
+                text="Duur",
+                description=(
+                    "Hoe lang het event ongeveer duurt."
+                ),
+                component=self.duration,
+            )
+        )
+        self.add_item(
+            self.max_slots
+        )
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
+        if interaction.guild is None:
+            await self.cog.send_feedback(
+                interaction,
+                "Server niet gevonden.",
+                kind="error",
+            )
+            return
+
+        raw_times = [
+            value.strip()
+            for value in re.split(
+                r"[,;]",
+                str(self.times),
+            )
+            if value.strip()
+        ]
+
+        if not raw_times:
+            await self.cog.send_feedback(
+                interaction,
+                "Vul minimaal één tijd in.",
+                kind="error",
+            )
+            return
+
+        if len(raw_times) > 10:
+            await self.cog.send_feedback(
+                interaction,
+                "Je kunt maximaal 10 tijdopties toevoegen.",
+                kind="error",
+            )
+            return
+
         try:
-            duration = int(str(self.duration).strip())
-            max_slots = int(str(self.max_slots).strip())
-        except ValueError:
-            await interaction.response.send_message("Duur en maximaal aantal deelnemers moeten getallen zijn.", ephemeral=True)
+            parsed = sorted(
+                {
+                    combine_amsterdam(
+                        str(self.date).strip(),
+                        value,
+                    )
+                    for value
+                    in raw_times
+                }
+            )
+
+            max_slots = int(
+                str(
+                    self.max_slots
+                ).strip()
+            )
+
+            duration = int(
+                self.duration.values[0]
+            )
+
+        except ValueError as exc:
+            await self.cog.send_feedback(
+                interaction,
+                str(exc),
+                kind="error",
+            )
             return
-        if not 15 <= duration <= 1440:
-            await interaction.response.send_message("De duur moet tussen 15 en 1440 minuten liggen.", ephemeral=True)
+        except (
+            IndexError,
+            TypeError,
+        ):
+            await self.cog.send_feedback(
+                interaction,
+                "Kies een geldige duur.",
+                kind="error",
+            )
             return
-        if not 0 <= max_slots <= MAX_SLOTS_LIMIT:
-            await interaction.response.send_message(f"Max. deelnemers moet 0 t/m {MAX_SLOTS_LIMIT} zijn.", ephemeral=True)
+
+        if any(
+            dt
+            <= utc_now()
+            + timedelta(minutes=5)
+            for dt in parsed
+        ):
+            await self.cog.send_feedback(
+                interaction,
+                (
+                    "Elke tijd moet minimaal "
+                    "5 minuten in de toekomst liggen."
+                ),
+                kind="error",
+            )
             return
-        self.state.description = str(self.description).strip()
+
+        if not (
+            0
+            <= max_slots
+            <= MAX_SLOTS_LIMIT
+        ):
+            await self.cog.send_feedback(
+                interaction,
+                (
+                    "Max. deelnemers moet "
+                    f"0 t/m {MAX_SLOTS_LIMIT} zijn."
+                ),
+                kind="error",
+            )
+            return
+
+        self.state.time_options = parsed
         self.state.duration_minutes = duration
         self.state.max_slots = max_slots
-        await interaction.response.edit_message(embed=self.cog.wizard_embed(self.state), view=SetupWizardView(self.cog, self.state))
 
+        await interaction.response.defer(
+            ephemeral=True,
+            thinking=True,
+        )
 
-class PlanningModal(discord.ui.Modal, title="Planning instellen"):
-    date = discord.ui.TextInput(label="Datum", placeholder="12-09-2026", max_length=10)
-    time_1 = discord.ui.TextInput(label="Tijd 1", placeholder="20:00", max_length=5)
-    time_2 = discord.ui.TextInput(label="Tijd 2", placeholder="Optioneel, bijv. 21:00", required=False, max_length=5)
-    time_3 = discord.ui.TextInput(label="Tijd 3", placeholder="Optioneel, bijv. 22:00", required=False, max_length=5)
-
-    def __init__(self, cog: "Events", state: WizardState):
-        super().__init__()
-        self.cog = cog
-        self.state = state
-        if state.time_options:
-            first = state.time_options[0].astimezone(AMSTERDAM)
-            self.date.default = first.strftime("%d-%m-%Y")
-            times = [dt.astimezone(AMSTERDAM).strftime("%H:%M") for dt in state.time_options[:3]]
-            if times:
-                self.time_1.default = times[0]
-            if len(times) > 1:
-                self.time_2.default = times[1]
-            if len(times) > 2:
-                self.time_3.default = times[2]
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        date_value = str(self.date).strip()
-        times = [str(self.time_1).strip(), str(self.time_2).strip(), str(self.time_3).strip()]
         try:
-            parsed = sorted({combine_amsterdam(date_value, value) for value in times if value})
-        except ValueError as exc:
-            await interaction.response.send_message(str(exc), ephemeral=True)
-            return
-        if not parsed:
-            await interaction.response.send_message("Vul minimaal één tijd in.", ephemeral=True)
-            return
-        if any(dt <= utc_now() + timedelta(minutes=5) for dt in parsed):
-            await interaction.response.send_message("Elke optie moet minimaal 5 minuten in de toekomst liggen.", ephemeral=True)
-            return
-        self.state.time_options = parsed
-        await interaction.response.edit_message(embed=self.cog.wizard_embed(self.state), view=SetupWizardView(self.cog, self.state))
-
-
-class SetupWizardView(discord.ui.View):
-    def __init__(self, cog: "Events", state: WizardState):
-        super().__init__(timeout=900)
-        self.cog = cog
-        self.state = state
-        guild = cog.bot.get_guild(state.guild_id)
-        if guild:
-            self.add_item(ActivitySelect(cog, state, guild))
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.state.author_id:
-            await interaction.response.send_message("Deze setup is niet van jou.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="Planning", style=discord.ButtonStyle.secondary, row=1)
-    async def planning(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(PlanningModal(self.cog, self.state))
-
-    @discord.ui.button(label="Instellingen", style=discord.ButtonStyle.secondary, row=1)
-    async def settings(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_modal(EventInfoModal(self.cog, self.state))
-
-    @discord.ui.button(label="Voice aan/uit", style=discord.ButtonStyle.secondary, row=1)
-    async def voice_toggle(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        self.state.temporary_voice = not self.state.temporary_voice
-        await interaction.response.edit_message(embed=self.cog.wizard_embed(self.state), view=SetupWizardView(self.cog, self.state))
-
-    @discord.ui.button(label="Preview", style=discord.ButtonStyle.secondary, row=2)
-    async def preview(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not self.state.game_name:
-            await interaction.response.send_message("Kies eerst een activiteit.", ephemeral=True)
-            return
-        await interaction.response.send_message(embed=self.cog.preview_embed(self.state), ephemeral=True)
-
-    @discord.ui.button(label="Publiceren", style=discord.ButtonStyle.success, row=2)
-    async def publish(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not self.state.game_name:
-            await interaction.response.send_message("Kies eerst een activiteit.", ephemeral=True)
-            return
-        if not self.state.time_options:
-            await interaction.response.send_message("Stel eerst minimaal één datum en tijd in.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            event_id = await self.cog.publish_from_wizard(interaction, self.state)
+            event_id = await self.cog.publish_from_wizard(
+                interaction,
+                self.state,
+            )
         except discord.Forbidden:
-            await interaction.followup.send("Ik mis permissies om dit event te publiceren. Controleer Manage Events, Manage Channels, View Channel en Send Messages.", ephemeral=True)
+            await interaction.edit_original_response(
+                content=None,
+                embed=None,
+                view=FeedbackView(
+                    (
+                        "Ik mis permissies om dit event te publiceren. "
+                        "Controleer **Manage Events**, **Manage Channels**, "
+                        "**View Channel** en **Send Messages**."
+                    ),
+                    kind="error",
+                    title="Publiceren mislukt",
+                ),
+            )
             return
-        except (discord.HTTPException, RuntimeError) as exc:
-            await interaction.followup.send(f"Publiceren is mislukt: `{truncate(str(exc), 300)}`", ephemeral=True)
+        except (
+            discord.HTTPException,
+            RuntimeError,
+        ) as exc:
+            logger.exception(
+                "Event publiceren mislukt."
+            )
+
+            await interaction.edit_original_response(
+                content=None,
+                embed=None,
+                view=FeedbackView(
+                    (
+                        "Het event kon niet worden gepubliceerd. "
+                        f"`{truncate(str(exc), 300)}`"
+                    ),
+                    kind="error",
+                    title="Publiceren mislukt",
+                ),
+            )
             return
-        await interaction.edit_original_response(embed=self.cog.wizard_embed(self.state, published=True), view=None)
-        await interaction.followup.send(f"Event #{event_id} is gepubliceerd.", ephemeral=True)
 
-
-# =========================================================
-# PUBLIC DASHBOARD
-# =========================================================
+        await interaction.edit_original_response(
+            content=None,
+            embed=None,
+            view=SetupContinueView(
+                self.cog,
+                self.state,
+                published=True,
+                event_id=event_id,
+            ),
+        )
 
 
 class JoinTimeModal(discord.ui.Modal):
-    """Native Discord modal with a required RadioGroup for planning votes."""
+    def __init__(
+        self,
+        cog: "Events",
+        event_id: int,
+        options: list[dict],
+    ):
+        super().__init__(
+            title="Deelnemen"
+        )
 
-    def __init__(self, cog: "Events", event_id: int, options: list[dict]):
-        super().__init__(title="Deelnemen")
         self.cog = cog
         self.event_id = event_id
 
-        radio_options: list[discord.RadioGroupOption] = []
-        for index, option in enumerate(options[:10], start=1):
-            starts = from_db(option["starts_at"])
+        radio_options: list[
+            discord.RadioGroupOption
+        ] = []
+
+        for index, option in enumerate(
+            options[:10],
+            start=1,
+        ):
+            starts = from_db(
+                option["starts_at"]
+            )
+
             if starts:
-                local = starts.astimezone(AMSTERDAM)
-                label = local.strftime("%H:%M")
-                description = local.strftime("%A %d-%m-%Y")
+                local = starts.astimezone(
+                    AMSTERDAM
+                )
+
+                label = local.strftime(
+                    "%H:%M"
+                )
+
+                description = local.strftime(
+                    "%A %d-%m-%Y"
+                )
             else:
-                label = f"Optie {index}"
+                label = (
+                    f"Optie {index}"
+                )
                 description = None
 
             radio_options.append(
                 discord.RadioGroupOption(
                     label=label,
-                    value=str(option["id"]),
+                    value=str(
+                        option["id"]
+                    ),
                     description=description,
                 )
             )
 
         self.time_choice = discord.ui.RadioGroup(
-            custom_id=f"levenloos:event:{event_id}:time_choice",
+            custom_id=(
+                f"levenloos:event:"
+                f"{event_id}:time_choice"
+            ),
             required=True,
             options=radio_options,
         )
+
         self.add_item(
             discord.ui.Label(
                 text="Kies wanneer je kunt",
-                description="Je keuze telt meteen als stem en je doet direct mee.",
+                description=(
+                    "Je keuze telt meteen als stem "
+                    "en je doet direct mee."
+                ),
                 component=self.time_choice,
             )
         )
 
-    async def on_submit(self, interaction: discord.Interaction) -> None:
+    async def on_submit(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
         if not self.time_choice.value:
-            await interaction.response.send_message("Kies één tijd om deel te nemen.", ephemeral=True)
+            await self.cog.send_feedback(
+                interaction,
+                "Kies één tijd om deel te nemen.",
+                kind="error",
+            )
             return
 
-        option_id = int(self.time_choice.value)
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        option_id = int(
+            self.time_choice.value
+        )
+
+        await interaction.response.defer(
+            ephemeral=True,
+            thinking=True,
+        )
 
         try:
-            message, interested_view = await self.cog.join_with_vote(
-                interaction, self.event_id, option_id
+            message, event_url = (
+                await self.cog.join_with_vote(
+                    interaction,
+                    self.event_id,
+                    option_id,
+                )
             )
-        except Exception as exc:
-            print(f"[events] Deelname via RadioGroup mislukt voor event {self.event_id}: {exc}")
+        except Exception:
+            logger.exception(
+                "Deelname via RadioGroup mislukt "
+                "voor event %s.",
+                self.event_id,
+            )
+
             await interaction.edit_original_response(
-                content="Je deelname kon niet worden opgeslagen. Probeer het opnieuw.",
-                view=None,
+                content=None,
+                embed=None,
+                view=FeedbackView(
+                    (
+                        "Je deelname kon niet worden opgeslagen. "
+                        "Probeer het opnieuw."
+                    ),
+                    kind="error",
+                ),
             )
             return
 
         await interaction.edit_original_response(
-            content=message,
-            view=interested_view,
+            content=None,
+            embed=None,
+            view=ParticipationResultView(
+                message,
+                event_url=event_url,
+            ),
         )
 
 
-class InterestedView(discord.ui.View):
-    """Prominent link to Discord's own RSVP/Interested screen.
+class JoinOptionsModal(discord.ui.Modal):
+    def __init__(
+        self,
+        cog: "Events",
+        event_id: int,
+        time_options: list[dict],
+        game_options: list[dict],
+    ):
+        super().__init__(
+            title="Deelnemen"
+        )
 
-    Discord does not allow bots to set another user's Scheduled Event RSVP,
-    so this deliberately makes the required user action as obvious as possible.
-    """
+        self.cog = cog
+        self.event_id = event_id
+        self.time_choice = None
+        self.game_choices = None
 
-    def __init__(self, event_url: str):
-        super().__init__(timeout=180)
+        if len(time_options) > 1:
+            radio_options: list[
+                discord.RadioGroupOption
+            ] = []
+
+            for index, option in enumerate(
+                time_options[:10],
+                start=1,
+            ):
+                starts = from_db(
+                    option["starts_at"]
+                )
+
+                label = (
+                    starts.astimezone(
+                        AMSTERDAM
+                    ).strftime("%H:%M")
+                    if starts
+                    else f"Optie {index}"
+                )
+
+                description = (
+                    starts.astimezone(
+                        AMSTERDAM
+                    ).strftime(
+                        "%A %d-%m-%Y"
+                    )
+                    if starts
+                    else None
+                )
+
+                radio_options.append(
+                    discord.RadioGroupOption(
+                        label=label,
+                        value=str(
+                            option["id"]
+                        ),
+                        description=description,
+                    )
+                )
+
+            self.time_choice = (
+                discord.ui.RadioGroup(
+                    custom_id=(
+                        f"levenloos:event:"
+                        f"{event_id}:time_choice"
+                    ),
+                    required=True,
+                    options=radio_options,
+                )
+            )
+
+            self.add_item(
+                discord.ui.Label(
+                    text="Kies wanneer je kunt",
+                    description=(
+                        "Je kunt één tijd kiezen."
+                    ),
+                    component=self.time_choice,
+                )
+            )
+
+        if game_options:
+            checkbox_options = [
+                discord.CheckboxGroupOption(
+                    label=truncate(
+                        str(option["name"]),
+                        100,
+                    ),
+                    value=str(
+                        option["id"]
+                    ),
+                )
+                for option
+                in game_options[:10]
+            ]
+
+            self.game_choices = (
+                discord.ui.CheckboxGroup(
+                    custom_id=(
+                        f"levenloos:event:"
+                        f"{event_id}:game_choices"
+                    ),
+                    required=True,
+                    min_values=1,
+                    max_values=len(
+                        checkbox_options
+                    ),
+                    options=checkbox_options,
+                )
+            )
+
+            self.add_item(
+                discord.ui.Label(
+                    text="Welke games wil je spelen?",
+                    description=(
+                        "Je mag meerdere games aanvinken."
+                    ),
+                    component=self.game_choices,
+                )
+            )
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
+        option_id = (
+            int(
+                self.time_choice.value
+            )
+            if (
+                self.time_choice
+                and self.time_choice.value
+            )
+            else None
+        )
+
+        game_ids = [
+            int(value)
+            for value in (
+                self.game_choices.values
+                if self.game_choices
+                else []
+            )
+        ]
+
+        await interaction.response.defer(
+            ephemeral=True,
+            thinking=True,
+        )
+
+        try:
+            message, event_url = (
+                await self.cog.join_with_choices(
+                    interaction,
+                    self.event_id,
+                    option_id,
+                    game_ids,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Deelname met keuzes mislukt "
+                "voor event %s.",
+                self.event_id,
+            )
+
+            await interaction.edit_original_response(
+                content=None,
+                embed=None,
+                view=FeedbackView(
+                    (
+                        "Je deelname kon niet worden opgeslagen. "
+                        "Probeer het opnieuw."
+                    ),
+                    kind="error",
+                ),
+            )
+            return
+
+        await interaction.edit_original_response(
+            content=None,
+            embed=None,
+            view=ParticipationResultView(
+                message,
+                event_url=event_url,
+            ),
+        )
+
+
+class DiscordEventLinkButton(discord.ui.Button):
+    def __init__(
+        self,
+        event_url: str,
+        *,
+        label: str = "Open Discord Event",
+    ):
+        super().__init__(
+            label=label,
+            emoji=component_emoji(
+                EVENT_EMOJI
+            ),
+            style=discord.ButtonStyle.link,
+            url=event_url,
+        )
+
+
+class ParticipationResultView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        message: str,
+        *,
+        event_url: str | None = None,
+    ):
+        super().__init__(
+            timeout=180
+        )
+
+        lower = message.casefold()
+
+        if "wachtlijst" in lower:
+            kind = "warning"
+            title = "Wachtlijst"
+        elif (
+            "afgemeld" in lower
+            or "gesloten" in lower
+            or "ongeldig" in lower
+        ):
+            kind = "info"
+            title = "Deelname bijgewerkt"
+        else:
+            kind = "success"
+            title = "Je doet mee"
+
+        _, icon, accent = feedback_style(
+            kind
+        )
+
+        children: list[
+            discord.ui.Item
+        ] = [
+            discord.ui.TextDisplay(
+                f"# {icon} {title}\n"
+                + "\n".join(
+                    f"> └ {line}"
+                    for line
+                    in message.splitlines()
+                    if line.strip()
+                )
+            )
+        ]
+
+        if event_url:
+            children.extend(
+                [
+                    discord.ui.Separator(
+                        visible=True,
+                        spacing=discord.SeparatorSpacing.small,
+                    ),
+                    discord.ui.ActionRow(
+                        DiscordEventLinkButton(
+                            event_url,
+                            label="Zet mij op Interested",
+                        )
+                    ),
+                    discord.ui.TextDisplay(
+                        "-# Discord laat bots niet namens een gebruiker "
+                        "de RSVP-status aanpassen."
+                    ),
+                ]
+            )
+
         self.add_item(
-            discord.ui.Button(
-                label="⭐  ZET MIJ OP INTERESTED  ⭐",
-                style=discord.ButtonStyle.link,
-                url=event_url,
-                row=0,
+            discord.ui.Container(
+                *children,
+                accent_colour=accent,
             )
         )
 
 
-class EventDashboardView(discord.ui.View):
-    def __init__(self, cog: "Events", event_id: int, *, disabled: bool = False):
-        super().__init__(timeout=None)
+class DashboardButton(discord.ui.Button):
+    def __init__(
+        self,
+        owner_view: "EventDashboardView",
+        action: str,
+        label: str,
+        *,
+        emoji: str | None = None,
+        style: discord.ButtonStyle = (
+            discord.ButtonStyle.secondary
+        ),
+        disabled: bool = False,
+    ):
+        super().__init__(
+            label=label,
+            emoji=component_emoji(
+                emoji
+            ),
+            style=style,
+            custom_id=(
+                f"levenloos:event:"
+                f"{owner_view.event_id}:{action}"
+            ),
+            disabled=disabled,
+        )
+
+        self.owner_view = owner_view
+        self.action = action
+
+    async def callback(
+        self,
+        interaction: discord.Interaction,
+    ):
+        await self.owner_view.handle(
+            interaction,
+            self.action,
+        )
+
+
+class EventDashboardView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        cog: "Events",
+        event_id: int,
+        sections: list[str],
+        *,
+        event_url: str | None = None,
+        disabled: bool = False,
+    ):
+        super().__init__(
+            timeout=None
+        )
+
         self.cog = cog
         self.event_id = event_id
-        for item in self.children:
-            if isinstance(item, discord.ui.Button):
-                item.custom_id = f"levenloos:event:{event_id}:{item.custom_id}"
-                if disabled:
-                    item.disabled = True
 
-    @discord.ui.button(label="Deelnemen", style=discord.ButtonStyle.success, custom_id="join", row=0)
-    async def join(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        event = await self.cog.get_event(self.event_id)
-        if not event or event["status"] in {STATUS_ENDED, STATUS_CANCELLED}:
-            await interaction.response.send_message("Dit event neemt geen aanmeldingen meer aan.", ephemeral=True)
-            return
-        if event["status"] == STATUS_PLANNING:
-            options = await self.cog.get_time_options(self.event_id)
-            if not options:
-                await interaction.response.send_message("Er zijn geen tijdopties beschikbaar.", ephemeral=True)
-                return
-            if len(options) == 1:
-                await interaction.response.defer(ephemeral=True, thinking=True)
-                message, interested_view = await self.cog.join_with_vote(
-                    interaction, self.event_id, int(options[0]["id"])
+        children: list[
+            discord.ui.Item
+        ] = []
+
+        for index, section in enumerate(
+            sections
+        ):
+            if index:
+                children.append(
+                    discord.ui.Separator(
+                        visible=True,
+                        spacing=(
+                            discord.SeparatorSpacing.small
+                        ),
+                    )
                 )
-                await interaction.edit_original_response(content=message, view=interested_view)
+
+            children.append(
+                discord.ui.TextDisplay(
+                    section
+                )
+            )
+
+        children.extend(
+            [
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    DashboardButton(
+                        self,
+                        "join",
+                        "Deelnemen",
+                        emoji=SUCCESS_EMOJI,
+                        style=discord.ButtonStyle.success,
+                        disabled=disabled,
+                    ),
+                    DashboardButton(
+                        self,
+                        "leave",
+                        "Afmelden",
+                        emoji=NONE_EMOJI,
+                        disabled=disabled,
+                    ),
+                    DashboardButton(
+                        self,
+                        "manage",
+                        "Beheren",
+                        emoji=SETTINGS_EMOJI,
+                        disabled=disabled,
+                    ),
+                    *(
+                        [
+                            DiscordEventLinkButton(
+                                event_url
+                            )
+                        ]
+                        if event_url
+                        else []
+                    ),
+                ),
+                discord.ui.TextDisplay(
+                    f"-# Event #{event_id} • LEVENLOOS Events"
+                ),
+            ]
+        )
+
+        self.add_item(
+            discord.ui.Container(
+                *children,
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+    @classmethod
+    async def create(
+        cls,
+        cog: "Events",
+        event_id: int,
+        *,
+        disabled: bool = False,
+    ) -> "EventDashboardView":
+        event = await cog.get_event(
+            event_id
+        )
+
+        if event is None:
+            raise RuntimeError(
+                "Event niet gevonden."
+            )
+
+        event_url = None
+
+        if event["discord_event_id"]:
+            event_url = (
+                "https://discord.com/events/"
+                f"{event['guild_id']}/"
+                f"{event['discord_event_id']}"
+            )
+
+        return cls(
+            cog,
+            event_id,
+            await cog.dashboard_sections(
+                event_id
+            ),
+            event_url=event_url,
+            disabled=disabled,
+        )
+
+    async def handle(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+    ) -> None:
+        event = await self.cog.get_event(
+            self.event_id
+        )
+
+        if not event:
+            await self.cog.send_feedback(
+                interaction,
+                "Dit event bestaat niet meer.",
+                kind="error",
+            )
+            return
+
+        if action == "join":
+            if event["status"] in {
+                STATUS_ENDED,
+                STATUS_CANCELLED,
+            }:
+                await self.cog.send_feedback(
+                    interaction,
+                    "Dit event neemt geen aanmeldingen meer aan.",
+                    kind="warning",
+                )
                 return
-            if len(options) > 10:
-                await interaction.response.send_message(
-                    "Dit event heeft te veel tijdopties voor de radio-keuze. Vraag de host om maximaal 10 opties te gebruiken.",
+
+            time_options = (
+                await self.cog.get_time_options(
+                    self.event_id
+                )
+            )
+
+            game_options = (
+                await self.cog.get_game_options(
+                    self.event_id
+                )
+            )
+
+            if (
+                game_options
+                or (
+                    event["status"]
+                    == STATUS_PLANNING
+                    and len(
+                        time_options
+                    ) > 1
+                )
+            ):
+                if (
+                    len(time_options) > 10
+                    or len(game_options) > 10
+                ):
+                    await self.cog.send_feedback(
+                        interaction,
+                        (
+                            "Dit event heeft te veel keuze-opties. "
+                            "Maximaal 10 tijdopties en 10 games "
+                            "worden ondersteund."
+                        ),
+                        kind="error",
+                    )
+                    return
+
+                await interaction.response.send_modal(
+                    JoinOptionsModal(
+                        self.cog,
+                        self.event_id,
+                        time_options,
+                        game_options,
+                    )
+                )
+                return
+
+            if (
+                event["status"]
+                == STATUS_PLANNING
+            ):
+                if not time_options:
+                    await self.cog.send_feedback(
+                        interaction,
+                        "Er zijn geen tijdopties beschikbaar.",
+                        kind="error",
+                    )
+                    return
+
+                await interaction.response.defer(
                     ephemeral=True,
+                    thinking=True,
+                )
+
+                message, event_url = (
+                    await self.cog.join_with_vote(
+                        interaction,
+                        self.event_id,
+                        int(
+                            time_options[0]["id"]
+                        ),
+                    )
+                )
+
+                await interaction.edit_original_response(
+                    content=None,
+                    embed=None,
+                    view=ParticipationResultView(
+                        message,
+                        event_url=event_url,
+                    ),
                 )
                 return
-            await interaction.response.send_modal(JoinTimeModal(self.cog, self.event_id, options))
+
+            await self.cog.set_participant(
+                interaction,
+                self.event_id,
+                "going",
+            )
             return
-        await self.cog.set_participant(interaction, self.event_id, "going")
 
-    @discord.ui.button(label="Afmelden", style=discord.ButtonStyle.secondary, custom_id="leave", row=0)
-    async def leave(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self.cog.set_participant(interaction, self.event_id, "leave")
-
-    @discord.ui.button(label="Beheren", style=discord.ButtonStyle.secondary, custom_id="manage", row=0)
-    async def manage(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not await self.cog.can_manage_event(interaction, self.event_id):
-            await interaction.response.send_message("Alleen de host, co-host of beheerder kan dit event beheren.", ephemeral=True)
+        if action == "leave":
+            await self.cog.set_participant(
+                interaction,
+                self.event_id,
+                "leave",
+            )
             return
-        await interaction.response.send_message(embed=await self.cog.management_embed(self.event_id), view=EventManagementView(self.cog, self.event_id), ephemeral=True)
+
+        if action == "manage":
+            if not await self.cog.can_manage_event(
+                interaction,
+                self.event_id,
+            ):
+                await self.cog.send_feedback(
+                    interaction,
+                    (
+                        "Alleen de host, co-host of beheerder "
+                        "kan dit event beheren."
+                    ),
+                    kind="error",
+                    title="Geen toegang",
+                )
+                return
+
+            await interaction.response.send_message(
+                view=await EventManagementView.create(
+                    self.cog,
+                    self.event_id,
+                    interaction.user.id,
+                ),
+                ephemeral=True,
+            )
 
 
-class EventManagementView(discord.ui.View):
-    def __init__(self, cog: "Events", event_id: int):
-        super().__init__(timeout=600)
+class ManagementButton(discord.ui.Button):
+    def __init__(
+        self,
+        owner_view: "EventManagementView",
+        action: str,
+        label: str,
+        *,
+        emoji: str | None = None,
+        style: discord.ButtonStyle = (
+            discord.ButtonStyle.secondary
+        ),
+        disabled: bool = False,
+    ):
+        super().__init__(
+            label=label,
+            emoji=component_emoji(
+                emoji
+            ),
+            style=style,
+            disabled=disabled,
+        )
+
+        self.owner_view = owner_view
+        self.action = action
+
+    async def callback(
+        self,
+        interaction: discord.Interaction,
+    ):
+        await self.owner_view.handle(
+            interaction,
+            self.action,
+        )
+
+
+class EventManagementView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        cog: "Events",
+        event_id: int,
+        owner_id: int,
+        body: str,
+        *,
+        notice: str | None = None,
+    ):
+        super().__init__(
+            timeout=600
+        )
+
         self.cog = cog
         self.event_id = event_id
+        self.owner_id = owner_id
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        allowed = await self.cog.can_manage_event(interaction, self.event_id)
-        if not allowed:
-            await interaction.response.send_message("Geen toegang.", ephemeral=True)
-        return allowed
+        children: list[
+            discord.ui.Item
+        ] = [
+            discord.ui.TextDisplay(
+                body
+            )
+        ]
 
-    @discord.ui.button(label="Stemming sluiten", style=discord.ButtonStyle.primary)
-    async def close_poll(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        result = await self.cog.close_poll(self.event_id, interaction.guild)
-        await interaction.followup.send(result, ephemeral=True)
+        if notice:
+            children.extend(
+                [
+                    discord.ui.Separator(
+                        visible=True,
+                        spacing=discord.SeparatorSpacing.small,
+                    ),
+                    discord.ui.TextDisplay(
+                        f"## {INFO_EMOJI} Laatste actie\n"
+                        f"> └ {notice}"
+                    ),
+                ]
+            )
 
-    @discord.ui.button(label="Dashboard vernieuwen", style=discord.ButtonStyle.secondary)
-    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.defer(ephemeral=True)
-        await self.cog.refresh_dashboard(self.event_id)
-        await interaction.followup.send("Dashboard vernieuwd.", ephemeral=True)
+        children.extend(
+            [
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    ManagementButton(
+                        self,
+                        "close_poll",
+                        "Stemming sluiten",
+                        emoji=LOCK_EMOJI,
+                        style=discord.ButtonStyle.primary,
+                    ),
+                    ManagementButton(
+                        self,
+                        "refresh",
+                        "Vernieuwen",
+                        emoji=REFRESH_EMOJI,
+                    ),
+                    ManagementButton(
+                        self,
+                        "cancel",
+                        "Event annuleren",
+                        emoji=DELETE_EMOJI,
+                        style=discord.ButtonStyle.danger,
+                    ),
+                ),
+            ]
+        )
 
-    @discord.ui.button(label="Annuleren", style=discord.ButtonStyle.danger)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.send_message("Weet je zeker dat je dit event wilt annuleren?", view=CancelConfirmView(self.cog, self.event_id), ephemeral=True)
+        self.add_item(
+            discord.ui.Container(
+                *children,
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+    @classmethod
+    async def create(
+        cls,
+        cog: "Events",
+        event_id: int,
+        owner_id: int,
+        *,
+        notice: str | None = None,
+    ) -> "EventManagementView":
+        return cls(
+            cog,
+            event_id,
+            owner_id,
+            await cog.management_text(
+                event_id
+            ),
+            notice=notice,
+        )
+
+    async def interaction_check(
+        self,
+        interaction: discord.Interaction,
+    ) -> bool:
+        if (
+            interaction.user.id
+            == self.owner_id
+            and await self.cog.can_manage_event(
+                interaction,
+                self.event_id,
+            )
+        ):
+            return True
+
+        await self.cog.send_feedback(
+            interaction,
+            "Geen toegang tot dit beheermenu.",
+            kind="error",
+        )
+        return False
+
+    async def handle(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+    ):
+        if action == "close_poll":
+            await interaction.response.defer(
+                ephemeral=True,
+                thinking=True,
+            )
+
+            result = await self.cog.close_poll(
+                self.event_id,
+                interaction.guild,
+            )
+
+            await interaction.edit_original_response(
+                content=None,
+                embed=None,
+                view=await EventManagementView.create(
+                    self.cog,
+                    self.event_id,
+                    self.owner_id,
+                    notice=result,
+                ),
+            )
+            return
+
+        if action == "refresh":
+            await interaction.response.defer(
+                ephemeral=True,
+                thinking=True,
+            )
+
+            await self.cog.refresh_dashboard(
+                self.event_id
+            )
+
+            await interaction.edit_original_response(
+                content=None,
+                embed=None,
+                view=await EventManagementView.create(
+                    self.cog,
+                    self.event_id,
+                    self.owner_id,
+                    notice="Het openbare dashboard is vernieuwd.",
+                ),
+            )
+            return
+
+        if action == "cancel":
+            await interaction.response.edit_message(
+                content=None,
+                embed=None,
+                view=CancelConfirmView(
+                    self.cog,
+                    self.event_id,
+                    self.owner_id,
+                ),
+            )
 
 
-class CancelConfirmView(discord.ui.View):
-    def __init__(self, cog: "Events", event_id: int):
-        super().__init__(timeout=60)
+class CancelConfirmButton(discord.ui.Button):
+    def __init__(
+        self,
+        owner_view: "CancelConfirmView",
+        action: str,
+    ):
+        if action == "confirm":
+            label = "Event annuleren"
+            emoji = DELETE_EMOJI
+            style = discord.ButtonStyle.danger
+        else:
+            label = "Terug"
+            emoji = BACK_EMOJI
+            style = discord.ButtonStyle.secondary
+
+        super().__init__(
+            label=label,
+            emoji=component_emoji(
+                emoji
+            ),
+            style=style,
+        )
+
+        self.owner_view = owner_view
+        self.action = action
+
+    async def callback(
+        self,
+        interaction: discord.Interaction,
+    ):
+        if self.action == "back":
+            await interaction.response.edit_message(
+                content=None,
+                embed=None,
+                view=await EventManagementView.create(
+                    self.owner_view.cog,
+                    self.owner_view.event_id,
+                    self.owner_view.owner_id,
+                ),
+            )
+            return
+
+        if not await self.owner_view.cog.can_manage_event(
+            interaction,
+            self.owner_view.event_id,
+        ):
+            await self.owner_view.cog.send_feedback(
+                interaction,
+                "Geen toegang.",
+                kind="error",
+            )
+            return
+
+        await interaction.response.defer(
+            ephemeral=True,
+            thinking=True,
+        )
+
+        await self.owner_view.cog.cancel_event(
+            self.owner_view.event_id,
+            interaction.guild,
+        )
+
+        await interaction.edit_original_response(
+            content=None,
+            embed=None,
+            view=FeedbackView(
+                "Het event is geannuleerd.",
+                kind="success",
+                title="Event geannuleerd",
+            ),
+        )
+
+
+class CancelConfirmView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        cog: "Events",
+        event_id: int,
+        owner_id: int,
+    ):
+        super().__init__(
+            timeout=60
+        )
+
         self.cog = cog
         self.event_id = event_id
+        self.owner_id = owner_id
 
-    @discord.ui.button(label="Event annuleren", style=discord.ButtonStyle.danger)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if not await self.cog.can_manage_event(interaction, self.event_id):
-            await interaction.response.send_message("Geen toegang.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        await self.cog.cancel_event(self.event_id, interaction.guild)
-        await interaction.followup.send("Event geannuleerd.", ephemeral=True)
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    f"# {WARNING_EMOJI} Event annuleren\n"
+                    f"> └ Event **#{event_id}** wordt geannuleerd.\n"
+                    "> └ Het openbare dashboard wordt gesloten en "
+                    "een leeg tijdelijk voicekanaal wordt opgeruimd."
+                ),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    CancelConfirmButton(
+                        self,
+                        "confirm",
+                    ),
+                    CancelConfirmButton(
+                        self,
+                        "back",
+                    ),
+                ),
+                accent_colour=discord.Colour.from_rgb(
+                    237,
+                    66,
+                    69,
+                ),
+            )
+        )
 
+    async def interaction_check(
+        self,
+        interaction: discord.Interaction,
+    ) -> bool:
+        if (
+            interaction.user.id
+            == self.owner_id
+            and await self.cog.can_manage_event(
+                interaction,
+                self.event_id,
+            )
+        ):
+            return True
 
-# =========================================================
-# CONFIG VIEW
-# =========================================================
+        await self.cog.send_feedback(
+            interaction,
+            "Geen toegang tot deze bevestiging.",
+            kind="error",
+        )
+        return False
 
 
 class EventChannelSelect(discord.ui.ChannelSelect):
-    def __init__(self, cog: "Events", guild_id: int):
-        super().__init__(placeholder="Dashboardkanaal", channel_types=[discord.ChannelType.text], min_values=1, max_values=1, row=0)
-        self.cog = cog
-        self.guild_id = guild_id
+    def __init__(
+        self,
+        owner_view: "EventConfigView",
+    ):
+        super().__init__(
+            placeholder="Dashboardkanaal",
+            channel_types=[
+                discord.ChannelType.text
+            ],
+            min_values=1,
+            max_values=1,
+        )
 
-    async def callback(self, interaction: discord.Interaction) -> None:
+        self.owner_view = owner_view
+
+    async def callback(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
         channel = self.values[0]
-        await self.cog.set_config_value(self.guild_id, "event_channel_id", channel.id)
-        await interaction.response.send_message(f"Dashboardkanaal ingesteld op {channel.mention}.", ephemeral=True)
+
+        await self.owner_view.cog.set_config_value(
+            self.owner_view.guild_id,
+            "event_channel_id",
+            channel.id,
+        )
+
+        await interaction.response.edit_message(
+            content=None,
+            embed=None,
+            view=await EventConfigView.create(
+                self.owner_view.cog,
+                interaction.guild,
+                self.owner_view.owner_id,
+                notice=(
+                    f"Dashboardkanaal ingesteld op "
+                    f"{channel.mention}."
+                ),
+            ),
+        )
 
 
 class VoiceCategorySelect(discord.ui.ChannelSelect):
-    def __init__(self, cog: "Events", guild_id: int):
-        super().__init__(placeholder="Voicecategorie", channel_types=[discord.ChannelType.category], min_values=1, max_values=1, row=1)
-        self.cog = cog
-        self.guild_id = guild_id
+    def __init__(
+        self,
+        owner_view: "EventConfigView",
+    ):
+        super().__init__(
+            placeholder="Voicecategorie",
+            channel_types=[
+                discord.ChannelType.category
+            ],
+            min_values=1,
+            max_values=1,
+        )
 
-    async def callback(self, interaction: discord.Interaction) -> None:
+        self.owner_view = owner_view
+
+    async def callback(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
         category = self.values[0]
-        await self.cog.set_config_value(self.guild_id, "voice_category_id", category.id)
-        await interaction.response.send_message(f"Voicecategorie ingesteld op **{category.name}**.", ephemeral=True)
+
+        await self.owner_view.cog.set_config_value(
+            self.owner_view.guild_id,
+            "voice_category_id",
+            category.id,
+        )
+
+        await interaction.response.edit_message(
+            content=None,
+            embed=None,
+            view=await EventConfigView.create(
+                self.owner_view.cog,
+                interaction.guild,
+                self.owner_view.owner_id,
+                notice=(
+                    f"Voicecategorie ingesteld op "
+                    f"**{category.name}**."
+                ),
+            ),
+        )
 
 
-class EventConfigView(discord.ui.View):
-    def __init__(self, cog: "Events", guild_id: int):
-        super().__init__(timeout=600)
-        self.add_item(EventChannelSelect(cog, guild_id))
-        self.add_item(VoiceCategorySelect(cog, guild_id))
+class EventConfigView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        cog: "Events",
+        guild: discord.Guild,
+        owner_id: int,
+        body: str,
+        *,
+        notice: str | None = None,
+    ):
+        super().__init__(
+            timeout=600
+        )
+
+        self.cog = cog
+        self.guild_id = guild.id
+        self.owner_id = owner_id
+
+        children: list[
+            discord.ui.Item
+        ] = [
+            discord.ui.TextDisplay(
+                body
+            )
+        ]
+
+        if notice:
+            children.extend(
+                [
+                    discord.ui.TextDisplay(
+                        f"> └ {SUCCESS_EMOJI} {notice}"
+                    )
+                ]
+            )
+
+        children.extend(
+            [
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.TextDisplay(
+                    f"## {EVENT_EMOJI} Dashboardkanaal\n"
+                    "> └ Kies waar openbare eventdashboards worden geplaatst."
+                ),
+                discord.ui.ActionRow(
+                    EventChannelSelect(
+                        self
+                    )
+                ),
+                discord.ui.TextDisplay(
+                    f"## {VOICE_EMOJI} Voicecategorie\n"
+                    "> └ Kies waar tijdelijke event-voicekanalen verschijnen."
+                ),
+                discord.ui.ActionRow(
+                    VoiceCategorySelect(
+                        self
+                    )
+                ),
+            ]
+        )
+
+        self.add_item(
+            discord.ui.Container(
+                *children,
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+    @classmethod
+    async def create(
+        cls,
+        cog: "Events",
+        guild: discord.Guild,
+        owner_id: int,
+        *,
+        notice: str | None = None,
+    ) -> "EventConfigView":
+        return cls(
+            cog,
+            guild,
+            owner_id,
+            await cog.config_text(
+                guild
+            ),
+            notice=notice,
+        )
+
+    async def interaction_check(
+        self,
+        interaction: discord.Interaction,
+    ) -> bool:
+        if (
+            interaction.user.id
+            == self.owner_id
+            and isinstance(
+                interaction.user,
+                discord.Member,
+            )
+            and management_access(
+                interaction.user
+            )
+        ):
+            return True
+
+        await self.cog.send_feedback(
+            interaction,
+            "Geen toegang tot dit configuratiemenu.",
+            kind="error",
+        )
+        return False
+
+
+class EventListView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        rows: list[aiosqlite.Row],
+    ):
+        super().__init__(
+            timeout=180
+        )
+
+        lines = [
+            f"# {EVENT_BANNER}",
+            f"## {LIST_EMOJI} Geplande events",
+        ]
+
+        for row in rows:
+            lines.extend(
+                [
+                    f"### {EVENT_EMOJI} {row['game_name']}",
+                    f"> └ Event **#{row['id']}** • "
+                    f"**{status_label(row['status'])}**",
+                    f"> └ {discord_ts(from_db(row['starts_at']), 'f')}",
+                ]
+            )
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    "\n".join(lines)
+                ),
+                discord.ui.TextDisplay(
+                    "-# Maximaal 15 actieve events worden getoond."
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
 
 
 # =========================================================
@@ -543,20 +2492,66 @@ class EventConfigView(discord.ui.View):
 # =========================================================
 
 
+
 class Events(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._locks: dict[int, asyncio.Lock] = {}
         self._views_restored = False
-        self.maintenance_loop.start()
 
     def cog_unload(self) -> None:
-        self.maintenance_loop.cancel()
+        if self.maintenance_loop.is_running():
+            self.maintenance_loop.cancel()
 
-    event = app_commands.Group(name="event", description="Plan en beheer events op LEVENLOOS.")
+    event = app_commands.Group(
+        name="event",
+        description="Plan en beheer events op LEVENLOOS.",
+    )
 
     async def cog_load(self) -> None:
+        if not hasattr(discord.ui, "LayoutView"):
+            raise RuntimeError(
+                "Events vereist discord.py 2.6+ voor Components V2."
+            )
+
+        if not hasattr(discord.ui, "RadioGroup"):
+            raise RuntimeError(
+                "Events vereist discord.py 2.7+ voor RadioGroup."
+            )
+
         await self.init_db()
+
+        if not self.maintenance_loop.is_running():
+            self.maintenance_loop.start()
+
+        logger.info("Events-module geladen.")
+
+    async def send_feedback(
+        self,
+        interaction: discord.Interaction,
+        message: str,
+        *,
+        kind: str = "info",
+        title: str | None = None,
+        footer: str | None = None,
+    ) -> None:
+        view = FeedbackView(
+            message,
+            kind=kind,
+            title=title,
+            footer=footer,
+        )
+
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                view=view,
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                view=view,
+                ephemeral=True,
+            )
 
     # -----------------------------------------------------
     # DATABASE
@@ -565,6 +2560,8 @@ class Events(commands.Cog):
     async def init_db(self) -> None:
         async with aiosqlite.connect(DATABASE_PATH) as db:
             await db.execute("PRAGMA foreign_keys = ON")
+            await db.execute("PRAGMA journal_mode = WAL")
+            await db.execute("PRAGMA busy_timeout = 5000")
             await db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS events (
@@ -573,6 +2570,7 @@ class Events(commands.Cog):
                     host_id INTEGER NOT NULL,
                     game_name TEXT NOT NULL,
                     game_role_id INTEGER,
+                    event_type TEXT NOT NULL DEFAULT 'Game Event',
                     description TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT 'planning',
                     max_slots INTEGER NOT NULL DEFAULT 0,
@@ -606,6 +2604,24 @@ class Events(commands.Cog):
                     FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE,
                     FOREIGN KEY(option_id) REFERENCES event_time_options(id) ON DELETE CASCADE
                 );
+                CREATE TABLE IF NOT EXISTS event_game_options (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    role_id INTEGER,
+                    sort_order INTEGER NOT NULL,
+                    UNIQUE(event_id, name),
+                    FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS event_game_votes (
+                    event_id INTEGER NOT NULL,
+                    option_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(event_id, option_id, user_id),
+                    FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE,
+                    FOREIGN KEY(option_id) REFERENCES event_game_options(id) ON DELETE CASCADE
+                );
                 CREATE TABLE IF NOT EXISTS event_participants (
                     event_id INTEGER NOT NULL,
                     user_id INTEGER NOT NULL,
@@ -635,8 +2651,14 @@ class Events(commands.Cog):
                 );
                 CREATE INDEX IF NOT EXISTS idx_events_guild_status ON events(guild_id, status);
                 CREATE INDEX IF NOT EXISTS idx_event_participants_status ON event_participants(event_id, status);
+                CREATE INDEX IF NOT EXISTS idx_event_time_votes_option ON event_time_votes(option_id);
+                CREATE INDEX IF NOT EXISTS idx_event_game_votes_option ON event_game_votes(option_id);
+                CREATE INDEX IF NOT EXISTS idx_event_reminders_sent ON event_reminders(event_id, sent);
                 """
             )
+            columns = {row[1] for row in await (await db.execute("PRAGMA table_info(events)")).fetchall()}
+            if "event_type" not in columns:
+                await db.execute("ALTER TABLE events ADD COLUMN event_type TEXT NOT NULL DEFAULT 'Game Event'")
             await db.commit()
 
     async def fetchone(self, query: str, params: tuple = ()) -> aiosqlite.Row | None:
@@ -660,6 +2682,20 @@ class Events(commands.Cog):
             SELECT o.id, o.starts_at, o.sort_order, COUNT(v.user_id) AS votes
             FROM event_time_options o
             LEFT JOIN event_time_votes v ON v.option_id = o.id
+            WHERE o.event_id = ?
+            GROUP BY o.id
+            ORDER BY o.sort_order ASC
+            """,
+            (event_id,),
+        )
+        return [dict(row) for row in rows]
+
+    async def get_game_options(self, event_id: int) -> list[dict]:
+        rows = await self.fetchall(
+            """
+            SELECT o.id, o.name, o.role_id, o.sort_order, COUNT(v.user_id) AS votes
+            FROM event_game_options o
+            LEFT JOIN event_game_votes v ON v.option_id = o.id
             WHERE o.event_id = ?
             GROUP BY o.id
             ORDER BY o.sort_order ASC
@@ -707,157 +2743,460 @@ class Events(commands.Cog):
                 await db.commit()
 
     # -----------------------------------------------------
-    # EMBEDS
+    # COMPONENTS V2 RENDERERS
     # -----------------------------------------------------
 
-    def wizard_embed(self, state: WizardState, *, published: bool = False) -> discord.Embed:
-        title = "EVENT GEPUBLICEERD" if published else "EVENT MAKEN"
-        intro = "De setup is afgerond." if published else "Stel hieronder je event samen. Er wordt pas iets gepubliceerd wanneer je bevestigt."
-        planning = "\n".join(
-            f"**{i} • {discord_ts(dt, 'f')}**\n> {discord_ts(dt, 'R')}"
-            for i, dt in enumerate(state.time_options, 1)
-        ) if state.time_options else "> Nog geen datum en tijd ingesteld."
-
-        embed = discord.Embed(
-            description=(
-                f"# {EVENT_BANNER}\n"
-                f"## 🎉 {title}\n"
-                f"> {intro}\n\n"
-                f"## 🎮 Activiteit\n"
-                f"> **{state.game_name or 'Niet gekozen'}**\n"
-                + (f"> {state.description}\n" if state.description else "")
-            ),
-            color=BRAND_COLOR,
-        )
-        embed.add_field(name="📅 Planning", value=planning, inline=False)
-        embed.add_field(name="⏱️ Duur", value=f"> **{human_duration(state.duration_minutes)}**")
-        embed.add_field(name="👥 Deelnemers", value=f"> **{state.max_slots if state.max_slots else 'Onbeperkt'}**")
-        embed.add_field(
-            name="🔊 Voice",
-            value="> **15 min vooraf**\n> Na afloop verwijderd zodra leeg" if state.temporary_voice else "> Uit",
-            inline=False,
-        )
-        return embed
-
-    def preview_embed(self, state: WizardState) -> discord.Embed:
-        planning = "\n".join(
-            f"**{i} • {discord_ts(dt, 'f')}**\n> {discord_ts(dt, 'R')}"
-            for i, dt in enumerate(state.time_options, 1)
-        ) if state.time_options else "> Nog niet ingesteld."
-        embed = discord.Embed(
-            description=(
-                f"# {EVENT_BANNER}\n"
-                f"## 🎮 {state.game_name or 'Event'}\n"
-                f"> {state.description or 'Geen beschrijving opgegeven.'}\n\n"
-                f"## 📋 Voorbeeld\n"
-                f"> **Status:** Planning\n"
-                f"> **Duur:** {human_duration(state.duration_minutes)}\n"
-                f"> **Plaatsen:** {state.max_slots if state.max_slots else 'Onbeperkt'}"
-            ),
-            color=BRAND_COLOR,
-        )
-        embed.add_field(name="📅 Planning", value=planning, inline=False)
-        return embed
-
-    async def dashboard_embed(self, event_id: int) -> discord.Embed:
-        event = await self.get_event(event_id)
-        if event is None:
-            raise RuntimeError("Event niet gevonden")
-
-        starts = from_db(event["starts_at"])
-        status = status_label(event["status"])
-        description = event["description"] or "Geen extra beschrijving opgegeven."
-
-        embed = discord.Embed(
-            description=(
-                f"# {EVENT_BANNER}\n"
-                f"## 🎮 {event['game_name']}\n"
-                f"> {description}\n\n"
-                f"## 📌 Event informatie\n"
-                f"> **Status:** {status}\n"
-                f"> **Wanneer:** {discord_ts(starts, 'F') if starts else 'Wordt bepaald'}\n"
-                + (f"> **Start:** {discord_ts(starts, 'R')}\n" if starts else "")
-                + f"> **Duur:** {human_duration(int(event['duration_minutes']))}"
-            ),
-            color=BRAND_COLOR,
+    def wizard_text(
+        self,
+        state: WizardState,
+        *,
+        published: bool = False,
+        event_id: int | None = None,
+    ) -> str:
+        title = (
+            "Event gepubliceerd"
+            if published
+            else "Event setup"
         )
 
-        going = await self.fetchall(
-            "SELECT user_id FROM event_participants WHERE event_id = ? AND status = 'going' ORDER BY joined_at ASC",
-            (event_id,),
-        )
-        waitlist = await self.fetchall(
-            "SELECT user_id FROM event_participants WHERE event_id = ? AND status = 'waitlist' ORDER BY queue_position ASC, joined_at ASC",
-            (event_id,),
-        )
-        capacity = event["max_slots"]
-        participant_title = f"👥 Deelnemers · {len(going)}/{capacity}" if capacity else f"👥 Deelnemers · {len(going)}"
-        participant_value = self.mention_list([row["user_id"] for row in going])
-        embed.add_field(
-            name=participant_title,
-            value=f"> {participant_value}" if participant_value != "Nog niemand." else "> Nog niemand. Klik op **Deelnemen** om mee te doen.",
-            inline=False,
+        intro = (
+            "De setup is afgerond."
+            if published
+            else (
+                "De basis staat klaar. Controleer dit en "
+                "vul daarna de planning in."
+            )
         )
 
-        if waitlist:
-            waitlist_value = self.mention_list([row["user_id"] for row in waitlist], numbered=True)
-            embed.add_field(name=f"⏳ Wachtlijst · {len(waitlist)}", value=f"> {waitlist_value}", inline=False)
+        lines = [
+            f"# {EVENT_BANNER}",
+            f"## {EVENT_EMOJI} {title}",
+            f"> └ {intro}",
+            "",
+            f"## {EVENT_EMOJI} Event",
+            f"> └ **Type:** {state.event_type}",
+            f"> └ **Naam:** {state.game_name or state.event_type}",
+        ]
 
-        if event["status"] == STATUS_PLANNING:
-            options = await self.get_time_options(event_id)
-            lines: list[str] = []
-            for index, option in enumerate(options, start=1):
-                voters = await self.fetchall(
-                    "SELECT user_id FROM event_time_votes WHERE option_id = ? ORDER BY created_at ASC",
-                    (option["id"],),
-                )
-                voter_mentions = " ".join(f"<@{row['user_id']}>" for row in voters[:12])
-                count = int(option["votes"])
-                vote_word = "stem" if count == 1 else "stemmen"
-                line = (
-                    f"**{index} • {discord_ts(from_db(option['starts_at']), 'f')}**\n"
-                    f"> **{count} {vote_word}**"
-                )
-                if voter_mentions:
-                    line += f" · {voter_mentions}"
-                lines.append(line)
-            embed.add_field(name="🗳️ Planning", value="\n\n".join(lines) or "> Geen opties.", inline=False)
-            closes = from_db(event["poll_closes_at"])
-            if closes:
-                embed.add_field(
-                    name="⏰ Stemming sluit",
-                    value=f"> {discord_ts(closes, 'F')}\n> {discord_ts(closes, 'R')}",
-                    inline=False,
-                )
-
-        if event["discord_event_id"]:
-            event_url = f"https://discord.com/events/{event['guild_id']}/{event['discord_event_id']}"
-            embed.add_field(
-                name="⭐ Discord Event",
-                value=f"> [**Open het officiële event en zet jezelf op Interested**]({event_url})",
-                inline=False,
+        if state.description:
+            lines.append(
+                f"> └ {state.description}"
             )
 
-        host_name = await self.user_display_name(int(event["guild_id"]), int(event["host_id"]))
-        embed.set_footer(text=f"Event #{event_id}  •  Host: {host_name}")
-        return embed
+        lines.extend(
+            [
+                "",
+                f"## {TIME_EMOJI} Planning",
+            ]
+        )
 
-    async def management_embed(self, event_id: int) -> discord.Embed:
-        event = await self.get_event(event_id)
-        if not event:
-            return discord.Embed(title="EVENT BEHEREN", description="Event niet gevonden.")
-        host_name = await self.user_display_name(int(event["guild_id"]), int(event["host_id"]))
-        return discord.Embed(
-            description=(
-                f"# {EVENT_BANNER}\n"
-                f"## ⚙️ Event beheren\n"
-                f"> **{event['game_name']}**\n\n"
-                f"## 📌 Details\n"
-                f"> **Event:** #{event_id}\n"
-                f"> **Status:** {status_label(event['status'])}\n"
-                f"> **Host:** {host_name}"
+        if state.time_options:
+            for index, dt in enumerate(
+                state.time_options,
+                start=1,
+            ):
+                lines.append(
+                    f"> └ **{index}.** "
+                    f"{discord_ts(dt, 'f')} • "
+                    f"{discord_ts(dt, 'R')}"
+                )
+        else:
+            lines.append(
+                "> └ Nog geen datum en tijd ingesteld."
+            )
+
+        lines.extend(
+            [
+                "",
+                f"## {GAMES_EMOJI} Games",
+            ]
+        )
+
+        if state.game_options:
+            for name, _ in state.game_options:
+                lines.append(
+                    f"> └ **{name}**"
+                )
+        else:
+            lines.append(
+                "> └ Geen game-stemming ingesteld."
+            )
+
+        lines.extend(
+            [
+                "",
+                f"## {SETTINGS_EMOJI} Instellingen",
+                f"> └ Duur: **{human_duration(state.duration_minutes)}**",
+                f"> └ Deelnemers: "
+                f"**{state.max_slots if state.max_slots else 'Onbeperkt'}**",
+                f"> └ {VOICE_EMOJI} Tijdelijk voicekanaal: "
+                f"**{'Aan' if state.temporary_voice else 'Uit'}**",
+            ]
+        )
+
+        if state.temporary_voice:
+            lines.append(
+                "> └ Voice opent **15 minuten vooraf** en "
+                "wordt na afloop verwijderd zodra het leeg is."
+            )
+
+        if published and event_id is not None:
+            lines.extend(
+                [
+                    "",
+                    f"-# Event #{event_id}",
+                ]
+            )
+
+        return "\n".join(lines)
+
+    async def dashboard_sections(
+        self,
+        event_id: int,
+    ) -> list[str]:
+        event = await self.get_event(
+            event_id
+        )
+
+        if event is None:
+            raise RuntimeError(
+                "Event niet gevonden"
+            )
+
+        starts = from_db(
+            event["starts_at"]
+        )
+
+        status = status_label(
+            event["status"]
+        )
+
+        description = (
+            event["description"]
+            or "Geen extra beschrijving opgegeven."
+        )
+
+        host_name = await self.user_display_name(
+            int(event["guild_id"]),
+            int(event["host_id"]),
+        )
+
+        header = [
+            f"# {EVENT_BANNER}",
+            f"## {EVENT_EMOJI} {event['game_name']}",
+            f"> └ **Type:** {event['event_type']}",
+            f"> └ {description}",
+            "",
+            f"## {EVENT_EMOJI} Event informatie",
+            f"> └ Status: **{status}**",
+            (
+                f"> └ Wanneer: **{discord_ts(starts, 'F')}**"
+                if starts
+                else "> └ Wanneer: **Wordt bepaald**"
             ),
-            color=BRAND_COLOR,
+        ]
+
+        if starts:
+            header.append(
+                f"> └ Start: {discord_ts(starts, 'R')}"
+            )
+
+        header.extend(
+            [
+                f"> └ Duur: **{human_duration(int(event['duration_minutes']))}**",
+                f"> └ Host: **{host_name}**",
+            ]
+        )
+
+        sections = [
+            "\n".join(header)
+        ]
+
+        going = await self.fetchall(
+            """
+            SELECT user_id
+            FROM event_participants
+            WHERE event_id = ?
+              AND status = 'going'
+            ORDER BY joined_at ASC
+            """,
+            (event_id,),
+        )
+
+        waitlist = await self.fetchall(
+            """
+            SELECT user_id
+            FROM event_participants
+            WHERE event_id = ?
+              AND status = 'waitlist'
+            ORDER BY queue_position ASC, joined_at ASC
+            """,
+            (event_id,),
+        )
+
+        capacity = int(
+            event["max_slots"]
+            or 0
+        )
+
+        participants = [
+            f"## {USER_EMOJI} Deelnemers"
+            + (
+                f" • {len(going)}/{capacity}"
+                if capacity
+                else f" • {len(going)}"
+            )
+        ]
+
+        participant_value = self.mention_list(
+            [
+                row["user_id"]
+                for row in going
+            ]
+        )
+
+        if participant_value == "Nog niemand.":
+            participants.append(
+                "> └ Nog niemand. Klik op **Deelnemen** om mee te doen."
+            )
+        else:
+            participants.append(
+                f"> └ {participant_value}"
+            )
+
+        if waitlist:
+            participants.extend(
+                [
+                    "",
+                    f"### Wachtlijst • {len(waitlist)}",
+                    f"> └ {self.mention_list([row['user_id'] for row in waitlist], numbered=True)}",
+                ]
+            )
+
+        sections.append(
+            "\n".join(participants)
+        )
+
+        if event["status"] == STATUS_PLANNING:
+            options = await self.get_time_options(
+                event_id
+            )
+
+            planning_lines = [
+                f"## {TIME_EMOJI} Planning"
+            ]
+
+            for index, option in enumerate(
+                options,
+                start=1,
+            ):
+                voters = await self.fetchall(
+                    """
+                    SELECT user_id
+                    FROM event_time_votes
+                    WHERE option_id = ?
+                    ORDER BY created_at ASC
+                    """,
+                    (option["id"],),
+                )
+
+                voter_mentions = " ".join(
+                    f"<@{row['user_id']}>"
+                    for row in voters[:12]
+                )
+
+                count = int(
+                    option["votes"]
+                )
+
+                vote_word = (
+                    "stem"
+                    if count == 1
+                    else "stemmen"
+                )
+
+                planning_lines.append(
+                    f"### {index}. "
+                    f"{discord_ts(from_db(option['starts_at']), 'f')}"
+                )
+
+                line = (
+                    f"> └ **{count} {vote_word}**"
+                )
+
+                if voter_mentions:
+                    line += (
+                        f" • {voter_mentions}"
+                    )
+
+                planning_lines.append(
+                    line
+                )
+
+            closes = from_db(
+                event["poll_closes_at"]
+            )
+
+            if closes:
+                planning_lines.extend(
+                    [
+                        "",
+                        f"> └ Stemming sluit "
+                        f"{discord_ts(closes, 'R')}",
+                    ]
+                )
+
+            sections.append(
+                "\n".join(
+                    planning_lines
+                )
+            )
+
+        game_options = await self.get_game_options(
+            event_id
+        )
+
+        if game_options:
+            game_lines = [
+                f"## {GAMES_EMOJI} Welke game spelen we?"
+            ]
+
+            for option in game_options:
+                voters = await self.fetchall(
+                    """
+                    SELECT user_id
+                    FROM event_game_votes
+                    WHERE option_id = ?
+                    ORDER BY created_at ASC
+                    """,
+                    (option["id"],),
+                )
+
+                mentions = " ".join(
+                    f"<@{row['user_id']}>"
+                    for row in voters[:12]
+                )
+
+                count = int(
+                    option["votes"]
+                )
+
+                vote_word = (
+                    "stem"
+                    if count == 1
+                    else "stemmen"
+                )
+
+                game_lines.append(
+                    f"### {option['name']}"
+                )
+
+                line = (
+                    f"> └ **{count} {vote_word}**"
+                )
+
+                if mentions:
+                    line += (
+                        f" • {mentions}"
+                    )
+
+                game_lines.append(
+                    line
+                )
+
+            sections.append(
+                "\n".join(
+                    game_lines
+                )
+            )
+
+        return sections
+
+    async def management_text(
+        self,
+        event_id: int,
+    ) -> str:
+        event = await self.get_event(
+            event_id
+        )
+
+        if not event:
+            return (
+                f"# {EVENT_BANNER}\n"
+                f"## {ERROR_EMOJI} Event niet gevonden"
+            )
+
+        host_name = await self.user_display_name(
+            int(event["guild_id"]),
+            int(event["host_id"]),
+        )
+
+        return (
+            f"# {EVENT_BANNER}\n"
+            f"## {SETTINGS_EMOJI} Event beheren\n"
+            f"> └ **{event['game_name']}**\n"
+            f"> └ Type: **{event['event_type']}**\n\n"
+            f"## {EVENT_EMOJI} Details\n"
+            f"> └ Event: **#{event_id}**\n"
+            f"> └ Status: **{status_label(event['status'])}**\n"
+            f"> └ Host: **{host_name}**"
+        )
+
+    async def config_text(
+        self,
+        guild: discord.Guild,
+    ) -> str:
+        config = await self.get_config(
+            guild.id
+        )
+
+        event_channel = (
+            guild.get_channel(
+                config["event_channel_id"]
+            )
+            if (
+                config
+                and config["event_channel_id"]
+            )
+            else None
+        )
+
+        voice_category = (
+            guild.get_channel(
+                config["voice_category_id"]
+            )
+            if (
+                config
+                and config["voice_category_id"]
+            )
+            else None
+        )
+
+        event_channel_text = (
+            event_channel.mention
+            if isinstance(
+                event_channel,
+                discord.TextChannel,
+            )
+            else "Niet ingesteld"
+        )
+
+        voice_category_text = (
+            f"**{voice_category.name}**"
+            if isinstance(
+                voice_category,
+                discord.CategoryChannel,
+            )
+            else "Niet ingesteld"
+        )
+
+        return (
+            f"# {EVENT_BANNER}\n"
+            f"## {SETTINGS_EMOJI} Event Config\n"
+            "> └ Stel de standaardlocaties voor events in.\n\n"
+            f"## {SETTINGS_EMOJI} Huidige instellingen\n"
+            f"> └ Dashboardkanaal: {event_channel_text}\n"
+            f"> └ Voicecategorie: {voice_category_text}"
         )
 
     async def user_display_name(self, guild_id: int, user_id: int) -> str:
@@ -924,12 +3263,12 @@ class Events(commands.Cog):
         async with aiosqlite.connect(DATABASE_PATH) as db:
             cursor = await db.execute(
                 """
-                INSERT INTO events(guild_id, host_id, game_name, game_role_id, description,
+                INSERT INTO events(guild_id, host_id, game_name, game_role_id, event_type, description,
                     status, max_slots, duration_minutes, starts_at, ends_at, poll_closes_at,
                     dashboard_channel_id, temporary_voice, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (guild.id, state.author_id, state.game_name, state.game_role_id, state.description,
+                (guild.id, state.author_id, state.game_name, state.game_role_id, state.event_type, state.description,
                  status, state.max_slots, state.duration_minutes, to_db(starts_at), to_db(ends_at),
                  to_db(poll_closes), dashboard_channel.id, 1 if state.temporary_voice else 0,
                  to_db(now), to_db(now)),
@@ -937,6 +3276,11 @@ class Events(commands.Cog):
             event_id = int(cursor.lastrowid)
             for index, dt in enumerate(state.time_options):
                 await db.execute("INSERT INTO event_time_options(event_id, starts_at, sort_order) VALUES (?, ?, ?)", (event_id, to_db(dt), index))
+            for index, (name, role_id) in enumerate(state.game_options):
+                await db.execute(
+                    "INSERT INTO event_game_options(event_id, name, role_id, sort_order) VALUES (?, ?, ?, ?)",
+                    (event_id, name, role_id, index),
+                )
             await db.execute("INSERT INTO event_hosts(event_id, user_id) VALUES (?, ?)", (event_id, state.author_id))
             # With one fixed time, the host is immediately a participant.
             # With multiple planning options, nobody can be a participant without choosing
@@ -952,12 +3296,28 @@ class Events(commands.Cog):
 
         try:
             if status == STATUS_CONFIRMED:
-                await self.create_official_event(event_id, guild)
-            message = await dashboard_channel.send(embed=await self.dashboard_embed(event_id), view=EventDashboardView(self, event_id))
+                await self.create_official_event(
+                    event_id,
+                    guild,
+                )
+
+            dashboard_view = await EventDashboardView.create(
+                self,
+                event_id,
+            )
+
+            message = await dashboard_channel.send(
+                view=dashboard_view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+
             async with aiosqlite.connect(DATABASE_PATH) as db:
                 await db.execute("UPDATE events SET dashboard_message_id = ?, updated_at = ? WHERE id = ?", (message.id, to_db(utc_now()), event_id))
                 await db.commit()
-            self.bot.add_view(EventDashboardView(self, event_id), message_id=message.id)
+            self.bot.add_view(
+                dashboard_view,
+                message_id=message.id,
+            )
             return event_id
         except Exception:
             async with aiosqlite.connect(DATABASE_PATH) as db:
@@ -1074,7 +3434,7 @@ class Events(commands.Cog):
 
     async def join_with_vote(
         self, interaction: discord.Interaction, event_id: int, option_id: int
-    ) -> tuple[str, discord.ui.View | None]:
+    ) -> tuple[str, str | None]:
         """Register a planning vote and participation as one persistent action.
 
         The vote and participant row are committed in the same transaction so
@@ -1177,16 +3537,110 @@ class Events(commands.Cog):
         await self.refresh_dashboard(event_id)
 
         event = await self.get_event(event_id)
-        view: discord.ui.View | None = None
+        event_url: str | None = None
         extra = "Je tijdkeuze is meteen als stem opgeslagen."
-        if event and event["discord_event_id"]:
-            event_url = f"https://discord.com/events/{event['guild_id']}/{event['discord_event_id']}"
-            view = InterestedView(event_url)
-            extra += "\n\nKlik hieronder ook op de grote knop en zet jezelf in Discord op **Interested**."
-        else:
-            extra += "\n\nZodra de winnende tijd vaststaat verschijnt het officiële Discord-event; daar kun je jezelf op **Interested** zetten."
 
-        return f"{participant_message}\n{extra}", view
+        if event and event["discord_event_id"]:
+            event_url = (
+                "https://discord.com/events/"
+                f"{event['guild_id']}/"
+                f"{event['discord_event_id']}"
+            )
+
+            extra += (
+                "\nKlik hieronder ook op **Zet mij op Interested** "
+                "om je Discord RSVP te registreren."
+            )
+        else:
+            extra += (
+                "\nZodra de winnende tijd vaststaat verschijnt het "
+                "officiële Discord-event."
+            )
+
+        return (
+            f"{participant_message}\n{extra}",
+            event_url,
+        )
+
+    async def join_with_choices(
+        self, interaction: discord.Interaction, event_id: int, option_id: int | None, game_option_ids: list[int]
+    ) -> tuple[str, str | None]:
+        event = await self.get_event(event_id)
+        if not event or event["status"] in {STATUS_ENDED, STATUS_CANCELLED}:
+            return "Dit event neemt geen aanmeldingen meer aan.", None
+
+        game_options = await self.get_game_options(event_id)
+        valid_game_ids = {int(option["id"]) for option in game_options}
+        selected_game_ids = {int(value) for value in game_option_ids}
+        if game_options and (not selected_game_ids or not selected_game_ids.issubset(valid_game_ids)):
+            return "Kies minimaal één geldige game.", None
+
+        if event["status"] == STATUS_PLANNING:
+            time_options = await self.get_time_options(event_id)
+            if len(time_options) > 1:
+                valid_time_ids = {int(option["id"]) for option in time_options}
+                if option_id is None or option_id not in valid_time_ids:
+                    return "Kies één geldige tijd.", None
+            elif time_options:
+                option_id = int(time_options[0]["id"])
+
+        lock = self._locks.setdefault(event_id, asyncio.Lock())
+        async with lock:
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                now = to_db(utc_now())
+                if event["status"] == STATUS_PLANNING and option_id is not None:
+                    await db.execute(
+                        """INSERT INTO event_time_votes(event_id, option_id, user_id, created_at)
+                           VALUES (?, ?, ?, ?)
+                           ON CONFLICT(event_id, user_id) DO UPDATE SET option_id=excluded.option_id, created_at=excluded.created_at""",
+                        (event_id, option_id, interaction.user.id, now),
+                    )
+
+                await db.execute(
+                    "DELETE FROM event_game_votes WHERE event_id = ? AND user_id = ?",
+                    (event_id, interaction.user.id),
+                )
+                for game_id in selected_game_ids:
+                    await db.execute(
+                        "INSERT INTO event_game_votes(event_id, option_id, user_id, created_at) VALUES (?, ?, ?, ?)",
+                        (event_id, game_id, interaction.user.id, now),
+                    )
+                await db.commit()
+
+            participant_message = await self._register_going(event_id, interaction.user.id)
+
+        await self.refresh_dashboard(event_id)
+        event = await self.get_event(event_id)
+        extras: list[str] = []
+        if option_id is not None and event and event["status"] == STATUS_PLANNING:
+            extras.append("Je tijdkeuze is als stem opgeslagen.")
+        if selected_game_ids:
+            extras.append("Je gamekeuze(s) zijn opgeslagen. Je mag meerdere games kiezen.")
+
+        event_url: str | None = None
+
+        if event and event["discord_event_id"]:
+            event_url = (
+                "https://discord.com/events/"
+                f"{event['guild_id']}/"
+                f"{event['discord_event_id']}"
+            )
+
+            extras.append(
+                "Klik hieronder ook op **Zet mij op Interested** "
+                "om je Discord RSVP te registreren."
+            )
+
+        return (
+            participant_message
+            + (
+                "\n"
+                + "\n".join(extras)
+                if extras
+                else ""
+            ),
+            event_url,
+        )
 
     async def set_participant(self, interaction: discord.Interaction, event_id: int, action: str) -> None:
         event = await self.get_event(event_id)
@@ -1199,20 +3653,42 @@ class Events(commands.Cog):
                 async with aiosqlite.connect(DATABASE_PATH) as db:
                     await db.execute("DELETE FROM event_participants WHERE event_id = ? AND user_id = ?", (event_id, interaction.user.id))
                     await db.execute("DELETE FROM event_time_votes WHERE event_id = ? AND user_id = ?", (event_id, interaction.user.id))
+                    await db.execute("DELETE FROM event_game_votes WHERE event_id = ? AND user_id = ?", (event_id, interaction.user.id))
                     await db.commit()
-                message = "Je bent afgemeld. Je eventuele stem is ook verwijderd."
+                message = "Je bent afgemeld. Je eventuele tijd- en gamestemmen zijn ook verwijderd."
                 promoted = await self.promote_waitlist(event_id)
                 if promoted:
                     await self.notify_promoted(event, promoted)
             else:
                 message = await self._register_going(event_id, interaction.user.id)
-        view = None
-        if action != "leave" and event["discord_event_id"]:
-            event_url = f"https://discord.com/events/{event['guild_id']}/{event['discord_event_id']}"
-            view = InterestedView(event_url)
-            message += "\n\nKlik hieronder ook op de grote knop en zet jezelf in Discord op **Interested**."
-        await interaction.response.send_message(message, view=view, ephemeral=True)
-        await self.refresh_dashboard(event_id)
+        event_url = None
+
+        if (
+            action != "leave"
+            and event["discord_event_id"]
+        ):
+            event_url = (
+                "https://discord.com/events/"
+                f"{event['guild_id']}/"
+                f"{event['discord_event_id']}"
+            )
+
+            message += (
+                "\nKlik hieronder ook op **Zet mij op Interested** "
+                "om je Discord RSVP te registreren."
+            )
+
+        await interaction.response.send_message(
+            view=ParticipationResultView(
+                message,
+                event_url=event_url,
+            ),
+            ephemeral=True,
+        )
+
+        await self.refresh_dashboard(
+            event_id
+        )
 
     async def promote_waitlist(self, event_id: int) -> int | None:
         event = await self.get_event(event_id)
@@ -1326,32 +3802,86 @@ class Events(commands.Cog):
                     if isinstance(fetched, discord.TextChannel):
                         channel = fetched
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
-                    print(f"[events] Kon dashboardkanaal voor event {event_id} niet ophalen: {exc}")
+                    logger.warning(
+                        "Kon dashboardkanaal voor event %s niet ophalen: %s",
+                        event_id,
+                        exc,
+                    )
                     return
 
         if not isinstance(channel, discord.TextChannel):
-            print(f"[events] Dashboardkanaal voor event {event_id} is niet beschikbaar ({channel_id}).")
+            logger.warning(
+                "Dashboardkanaal voor event %s is niet beschikbaar (%s).",
+                event_id,
+                channel_id,
+            )
             return
 
         try:
             message = await channel.fetch_message(int(event["dashboard_message_id"]))
             disabled = disable or event["status"] in {STATUS_ENDED, STATUS_CANCELLED}
             await message.edit(
-                embed=await self.dashboard_embed(event_id),
-                view=EventDashboardView(self, event_id, disabled=disabled),
+                content=None,
+                embed=None,
+                view=await EventDashboardView.create(
+                    self,
+                    event_id,
+                    disabled=disabled,
+                ),
+                allowed_mentions=discord.AllowedMentions.none(),
             )
         except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
             # Never hide dashboard update failures; they are essential when
             # debugging a join that was saved but not rendered.
-            print(f"[events] Kon dashboard van event {event_id} niet verversen: {type(exc).__name__}: {exc}")
+            logger.warning(
+                "Kon dashboard van event %s niet verversen: %s: %s",
+                event_id,
+                type(exc).__name__,
+                exc,
+            )
 
     async def restore_views(self) -> None:
         if self._views_restored:
             return
-        rows = await self.fetchall("SELECT id, dashboard_message_id FROM events WHERE status IN ('planning', 'confirmed', 'active') AND dashboard_message_id IS NOT NULL")
+        rows = await self.fetchall(
+            """
+            SELECT id, dashboard_message_id
+            FROM events
+            WHERE status IN ('planning', 'confirmed', 'active')
+              AND dashboard_message_id IS NOT NULL
+            """
+        )
+
+        restored = 0
+
         for row in rows:
-            self.bot.add_view(EventDashboardView(self, row["id"]), message_id=row["dashboard_message_id"])
+            try:
+                view = await EventDashboardView.create(
+                    self,
+                    int(row["id"]),
+                )
+
+                self.bot.add_view(
+                    view,
+                    message_id=int(
+                        row["dashboard_message_id"]
+                    ),
+                )
+
+                restored += 1
+
+            except Exception:
+                logger.exception(
+                    "Eventdashboard view herstellen mislukt voor event %s.",
+                    row["id"],
+                )
+
         self._views_restored = True
+
+        logger.info(
+            "%s eventdashboard view(s) hersteld.",
+            restored,
+        )
 
     # -----------------------------------------------------
     # VOICE / REMINDERS / MAINTENANCE
@@ -1454,7 +3984,11 @@ class Events(commands.Cog):
                 if now >= ends:
                     await self.cleanup_voice(event_id)
             except Exception as exc:
-                print(f"[EVENTS] Maintenance fout voor event #{event_id}: {exc}")
+                logger.exception(
+                    "Maintenance fout voor event #%s: %s",
+                    event_id,
+                    exc,
+                )
 
     @maintenance_loop.before_loop
     async def before_maintenance(self) -> None:
@@ -1494,55 +4028,208 @@ class Events(commands.Cog):
     # SLASH COMMANDS
     # -----------------------------------------------------
 
-    @event.command(name="setup", description="Maak een nieuw event.")
-    async def event_setup(self, interaction: discord.Interaction) -> None:
-        if interaction.guild is None or interaction.channel_id is None:
-            await interaction.response.send_message("Dit command werkt alleen in een server.", ephemeral=True)
+    @event.command(
+        name="setup",
+        description="Maak een nieuw event.",
+    )
+    async def event_setup(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
+        if (
+            interaction.guild is None
+            or interaction.channel_id is None
+        ):
+            await self.send_feedback(
+                interaction,
+                "Dit command werkt alleen in een server.",
+                kind="error",
+            )
             return
+
         member = interaction.user
-        event_role = interaction.guild.get_role(EVENT_CREATOR_ROLE_ID)
-        has_event_role = isinstance(member, discord.Member) and any(role.id == EVENT_CREATOR_ROLE_ID for role in member.roles)
+
+        event_role = interaction.guild.get_role(
+            EVENT_CREATOR_ROLE_ID
+        )
+
+        has_event_role = (
+            isinstance(
+                member,
+                discord.Member,
+            )
+            and any(
+                role.id
+                == EVENT_CREATOR_ROLE_ID
+                for role in member.roles
+            )
+        )
+
         if not has_event_role:
-            await interaction.response.send_message(f"Alleen leden met de {event_role.mention if event_role else '<@&985989826950086717>'} rol kunnen events aanmaken.", ephemeral=True)
-            return
-        state = WizardState(guild_id=interaction.guild.id, author_id=interaction.user.id, channel_id=interaction.channel_id)
-        await interaction.response.send_message(embed=self.wizard_embed(state), view=SetupWizardView(self, state), ephemeral=True)
+            role_text = (
+                event_role.mention
+                if event_role
+                else "<@&985989826950086717>"
+            )
 
-    @event.command(name="beheer", description="Open het beheer van een event.")
-    @app_commands.describe(event_id="Het nummer onderaan het eventdashboard")
-    async def event_manage(self, interaction: discord.Interaction, event_id: int) -> None:
-        if not await self.can_manage_event(interaction, event_id):
-            await interaction.response.send_message("Event niet gevonden of je hebt geen toegang.", ephemeral=True)
+            await self.send_feedback(
+                interaction,
+                (
+                    "Alleen leden met de "
+                    f"{role_text} rol kunnen events aanmaken."
+                ),
+                kind="error",
+                title="Geen toegang",
+            )
             return
-        await interaction.response.send_message(embed=await self.management_embed(event_id), view=EventManagementView(self, event_id), ephemeral=True)
 
-    @event.command(name="lijst", description="Bekijk geplande events.")
-    async def event_list(self, interaction: discord.Interaction) -> None:
+        state = WizardState(
+            guild_id=interaction.guild.id,
+            author_id=interaction.user.id,
+            channel_id=interaction.channel_id,
+        )
+
+        await interaction.response.send_modal(
+            EventSetupModal(
+                self,
+                state,
+                interaction.guild,
+            )
+        )
+
+    @event.command(
+        name="beheer",
+        description="Open het beheer van een event.",
+    )
+    @app_commands.describe(
+        event_id="Het nummer onderaan het eventdashboard",
+    )
+    async def event_manage(
+        self,
+        interaction: discord.Interaction,
+        event_id: int,
+    ) -> None:
+        if not await self.can_manage_event(
+            interaction,
+            event_id,
+        ):
+            await self.send_feedback(
+                interaction,
+                "Event niet gevonden of je hebt geen toegang.",
+                kind="error",
+            )
+            return
+
+        await interaction.response.send_message(
+            view=await EventManagementView.create(
+                self,
+                event_id,
+                interaction.user.id,
+            ),
+            ephemeral=True,
+        )
+
+    @event.command(
+        name="lijst",
+        description="Bekijk geplande events.",
+    )
+    async def event_list(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
         if interaction.guild is None:
-            await interaction.response.send_message("Dit command werkt alleen in een server.", ephemeral=True)
+            await self.send_feedback(
+                interaction,
+                "Dit command werkt alleen in een server.",
+                kind="error",
+            )
             return
-        rows = await self.fetchall("SELECT id, game_name, status, starts_at FROM events WHERE guild_id = ? AND status IN ('planning', 'confirmed', 'active') ORDER BY CASE WHEN starts_at IS NULL THEN 1 ELSE 0 END, starts_at ASC, id DESC LIMIT 15", (interaction.guild.id,))
-        if not rows:
-            await interaction.response.send_message("Er zijn geen actieve events.", ephemeral=True)
-            return
-        lines = [f"`#{row['id']}` **{row['game_name']}** · {status_label(row['status'])} · {discord_ts(from_db(row['starts_at']), 'f')}" for row in rows]
-        await interaction.response.send_message(embed=discord.Embed(title="EVENTS", description="\n".join(lines), color=BRAND_COLOR), ephemeral=True)
 
-    @event.command(name="config", description="Configureer het eventsysteem.")
-    async def event_config(self, interaction: discord.Interaction) -> None:
-        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("Dit command werkt alleen in een server.", ephemeral=True)
+        rows = await self.fetchall(
+            """
+            SELECT
+                id,
+                game_name,
+                status,
+                starts_at
+            FROM events
+            WHERE guild_id = ?
+              AND status IN (
+                  'planning',
+                  'confirmed',
+                  'active'
+              )
+            ORDER BY
+                CASE
+                    WHEN starts_at IS NULL
+                    THEN 1
+                    ELSE 0
+                END,
+                starts_at ASC,
+                id DESC
+            LIMIT 15
+            """,
+            (
+                interaction.guild.id,
+            ),
+        )
+
+        if not rows:
+            await self.send_feedback(
+                interaction,
+                "Er zijn geen actieve events.",
+                kind="info",
+                title="Geen events",
+            )
             return
-        if not management_access(interaction.user):
-            await interaction.response.send_message("Geen toegang.", ephemeral=True)
+
+        await interaction.response.send_message(
+            view=EventListView(
+                rows
+            ),
+            ephemeral=True,
+        )
+
+    @event.command(
+        name="config",
+        description="Configureer het eventsysteem.",
+    )
+    async def event_config(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
+        if (
+            interaction.guild is None
+            or not isinstance(
+                interaction.user,
+                discord.Member,
+            )
+        ):
+            await self.send_feedback(
+                interaction,
+                "Dit command werkt alleen in een server.",
+                kind="error",
+            )
             return
-        config = await self.get_config(interaction.guild.id)
-        event_channel = interaction.guild.get_channel(config["event_channel_id"]) if config and config["event_channel_id"] else None
-        voice_category = interaction.guild.get_channel(config["voice_category_id"]) if config and config["voice_category_id"] else None
-        embed = discord.Embed(title="EVENT CONFIG", description="Stel de standaardlocaties voor events in.", color=BRAND_COLOR)
-        embed.add_field(name="Dashboardkanaal", value=event_channel.mention if isinstance(event_channel, discord.TextChannel) else "Niet ingesteld", inline=False)
-        embed.add_field(name="Voicecategorie", value=voice_category.name if isinstance(voice_category, discord.CategoryChannel) else "Niet ingesteld", inline=False)
-        await interaction.response.send_message(embed=embed, view=EventConfigView(self, interaction.guild.id), ephemeral=True)
+
+        if not management_access(
+            interaction.user
+        ):
+            await self.send_feedback(
+                interaction,
+                "Geen toegang.",
+                kind="error",
+            )
+            return
+
+        await interaction.response.send_message(
+            view=await EventConfigView.create(
+                self,
+                interaction.guild,
+                interaction.user.id,
+            ),
+            ephemeral=True,
+        )
 
 
 async def setup(bot: commands.Bot) -> None:

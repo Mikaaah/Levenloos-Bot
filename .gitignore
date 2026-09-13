@@ -37,3 +37,6 @@ activityrank_import.json
 *.save
 *_old.py
 ./-bot -f
+*.db-wal
+*.db-shm
+backups/

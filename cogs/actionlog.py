@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections import OrderedDict
 from datetime import datetime, timezone
 
@@ -17,6 +18,25 @@ PURPLE = discord.Color.from_rgb(108, 39, 218)
 AUDIT_DELAY = 1.0
 AUDIT_WINDOW_SECONDS = 12
 MESSAGE_CACHE_LIMIT = 5000
+
+logger = logging.getLogger(__name__)
+
+
+# =========================================================
+# LEVENLOOS CUSTOM EMOJIS
+# =========================================================
+
+SUCCESS_EMOJI = "<:success:1547724072090079313>"
+ERROR_EMOJI = "<:error:1547724070252974131>"
+WARNING_EMOJI = "<:warning:1547724067568746526>"
+INFO_EMOJI = "<:info:1547724036107149413>"
+
+ADD_EMOJI = "<:add:1547724100812931072>"
+EDIT_EMOJI = "<:edit:1547724058894934116>"
+DELETE_EMOJI = "<:delete:1547724056768286750>"
+ROLES_EMOJI = "<:roll:1546435118455988332>"
+USER_EMOJI = "<:user:1547737210986692679>"
+SETTINGS_EMOJI = "<:instellingen:1547854198698287165>"
 
 # Categorieën waarvan kanaalwijzigingen niet gelogd worden.
 IGNORED_CHANNEL_CATEGORY_IDS = {
@@ -87,6 +107,19 @@ def colour_text(colour: discord.Colour) -> str:
     return f"#{colour.value:06X}"
 
 
+def management_access(member: discord.Member) -> bool:
+    if (
+        member.guild.owner_id == member.id
+        or member.guild_permissions.administrator
+    ):
+        return True
+
+    return any(
+        role.name.casefold() in {"admin", "owner"}
+        for role in member.roles
+    )
+
+
 def overwrite_summary(overwrite: discord.PermissionOverwrite) -> str:
     allowed, denied = overwrite.pair()
 
@@ -114,6 +147,192 @@ def overwrite_summary(overwrite: discord.PermissionOverwrite) -> str:
 
 
 # =========================================================
+# COMPONENTS V2
+# =========================================================
+
+class ActionLogCard(discord.ui.LayoutView):
+    def __init__(
+        self,
+        title: str,
+        *,
+        description: str | None = None,
+        colour: discord.Colour = PURPLE,
+        thumbnail: str | None = None,
+    ):
+        super().__init__(timeout=None)
+
+        now = datetime.now(timezone.utc)
+        timestamp = int(now.timestamp())
+
+        body = description or "*Geen extra informatie beschikbaar.*"
+
+        if thumbnail:
+            intro: discord.ui.Item = discord.ui.Section(
+                discord.ui.TextDisplay(
+                    f"# {title}\n"
+                    f"{body}"
+                ),
+                accessory=discord.ui.Thumbnail(
+                    thumbnail,
+                    description="Action Log profielfoto",
+                ),
+            )
+        else:
+            intro = discord.ui.TextDisplay(
+                f"# {title}\n"
+                f"{body}"
+            )
+
+        self.add_item(
+            discord.ui.Container(
+                intro,
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.TextDisplay(
+                    f"-# LEVENLOOS • Action Log • "
+                    f"<t:{timestamp}:F> • <t:{timestamp}:R>"
+                ),
+                accent_colour=colour,
+            )
+        )
+
+
+class ActionLogFeedbackView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: str = "info",
+        title: str | None = None,
+    ):
+        super().__init__(timeout=180)
+
+        if kind == "success":
+            icon = SUCCESS_EMOJI
+            accent = discord.Colour.from_rgb(
+                87,
+                242,
+                135,
+            )
+            default_title = "Gelukt"
+        elif kind == "error":
+            icon = ERROR_EMOJI
+            accent = discord.Colour.from_rgb(
+                237,
+                66,
+                69,
+            )
+            default_title = "Fout"
+        elif kind == "warning":
+            icon = WARNING_EMOJI
+            accent = discord.Colour.from_rgb(
+                254,
+                231,
+                92,
+            )
+            default_title = "Let op"
+        else:
+            icon = INFO_EMOJI
+            accent = PURPLE
+            default_title = "Informatie"
+
+        lines = [
+            f"> └ {line}"
+            for line in message.splitlines()
+            if line.strip()
+        ]
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    f"# {icon} {title or default_title}\n"
+                    + "\n".join(lines)
+                ),
+                accent_colour=accent,
+            )
+        )
+
+
+class ActionLogStatusView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        *,
+        channel: discord.TextChannel | None,
+        bot_member: discord.Member | None,
+        cache_size: int,
+        cache_limit: int,
+        ignored_categories: set[int],
+    ):
+        super().__init__(timeout=180)
+
+        if channel is None:
+            channel_text = "**Niet gevonden**"
+            send_text = "**Nee**"
+        else:
+            channel_text = channel.mention
+            send_text = (
+                "**Ja**"
+                if (
+                    bot_member is not None
+                    and channel.permissions_for(
+                        bot_member
+                    ).send_messages
+                )
+                else "**Nee**"
+            )
+
+        audit_text = (
+            "**Ja**"
+            if (
+                bot_member is not None
+                and bot_member.guild_permissions.view_audit_log
+            )
+            else "**Nee**"
+        )
+
+        ignored_text = (
+            ", ".join(
+                f"<#{category_id}>"
+                for category_id in sorted(
+                    ignored_categories
+                )
+            )
+            if ignored_categories
+            else "Geen"
+        )
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    f"# {INFO_EMOJI} Action Log status\n"
+                    "> └ Controle van kanaal, permissies en lokale cache.\n\n"
+                    f"## {INFO_EMOJI} Kanaal\n"
+                    f"> └ Action Log: {channel_text}\n"
+                    f"> └ Kan berichten sturen: {send_text}\n\n"
+                    f"## {SETTINGS_EMOJI} Audit Log\n"
+                    f"> └ Audit Log bekijken: {audit_text}\n"
+                    "> └ Zonder Audit Log-permissie kan **Door:** soms niet worden vastgesteld.\n\n"
+                    f"## {INFO_EMOJI} Berichtcache\n"
+                    f"> └ In cache: **{cache_size:,}** / **{cache_limit:,}**\n"
+                    "> └ De cache bewaart recente inhoud voor verwijderde en aangepaste berichten.\n\n"
+                    f"## {SETTINGS_EMOJI} Genegeerd\n"
+                    f"> └ Categorieën: {ignored_text}"
+                ),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.TextDisplay(
+                    "-# Join/leave, voice-status en kanaalvolgorde worden bewust niet gelogd."
+                ),
+                accent_colour=PURPLE,
+            )
+        )
+
+
+# =========================================================
 # COG
 # =========================================================
 
@@ -130,6 +349,39 @@ class Actionlog(commands.Cog):
         # Eigen kleine berichtcache. Daardoor kunnen we verwijderde/gewijzigde
         # inhoud loggen, ook wanneer discord.py het bericht niet meer cached heeft.
         self.message_cache: OrderedDict[int, dict] = OrderedDict()
+
+    async def cog_load(self):
+        if not hasattr(discord.ui, "LayoutView"):
+            raise RuntimeError(
+                "Actionlog vereist Discord Components V2."
+            )
+
+        logger.info("Actionlog-module geladen.")
+
+    async def send_feedback(
+        self,
+        interaction: discord.Interaction,
+        message: str,
+        *,
+        kind: str = "info",
+        title: str | None = None,
+    ) -> None:
+        view = ActionLogFeedbackView(
+            message,
+            kind=kind,
+            title=title,
+        )
+
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                view=view,
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                view=view,
+                ephemeral=True,
+            )
 
     # =====================================================
     # MESSAGE CACHE
@@ -181,31 +433,61 @@ class Actionlog(commands.Cog):
         description: str | None = None,
         colour: discord.Colour = PURPLE,
         thumbnail: str | None = None,
-    ):
-        channel = guild.get_channel(ACTION_LOG_CHANNEL_ID)
-
-        if not isinstance(channel, discord.TextChannel):
-            return
-
-        embed = discord.Embed(
-            title=title,
-            description=description,
-            color=colour,
-            timestamp=datetime.now(timezone.utc),
+    ) -> bool:
+        channel = guild.get_channel(
+            ACTION_LOG_CHANNEL_ID
         )
 
-        if thumbnail:
-            embed.set_thumbnail(url=thumbnail)
+        if not isinstance(
+            channel,
+            discord.TextChannel,
+        ):
+            logger.warning(
+                "Action Log-kanaal %s niet gevonden in guild %s.",
+                ACTION_LOG_CHANNEL_ID,
+                guild.id,
+            )
+            return False
 
-        embed.set_footer(text="LEVENLOOS • Action Log")
+        me = guild.me
+
+        if (
+            me is None
+            or not channel.permissions_for(
+                me
+            ).send_messages
+        ):
+            logger.warning(
+                "Geen toestemming om te sturen in Action Log-kanaal %s.",
+                channel.id,
+            )
+            return False
 
         try:
             await channel.send(
-                embed=embed,
-                allowed_mentions=discord.AllowedMentions.none(),
+                view=ActionLogCard(
+                    title,
+                    description=description,
+                    colour=colour,
+                    thumbnail=thumbnail,
+                ),
+                allowed_mentions=(
+                    discord.AllowedMentions.none()
+                ),
+                silent=True,
             )
-        except discord.HTTPException as error:
-            print(f"[ACTIONLOG SEND] {error}")
+        except (
+            discord.Forbidden,
+            discord.HTTPException,
+        ):
+            logger.exception(
+                "Action Log-bericht versturen mislukt "
+                "in guild %s.",
+                guild.id,
+            )
+            return False
+
+        return True
 
     # =====================================================
     # AUDIT LOG
@@ -221,7 +503,7 @@ class Actionlog(commands.Cog):
     ):
         # Audit-log entries kunnen iets later binnenkomen dan het event zelf.
         # Daarom een paar keer opnieuw proberen.
-        for delay in (0.8, 1.2, 1.8):
+        for delay in (AUDIT_DELAY * 0.8, AUDIT_DELAY * 1.2, AUDIT_DELAY * 1.8):
             await asyncio.sleep(delay)
 
             now = datetime.now(timezone.utc)
@@ -365,7 +647,7 @@ class Actionlog(commands.Cog):
 
         await self.send_log(
             guild,
-            "🗑️ BERICHT VERWIJDERD",
+            f"{DELETE_EMOJI} Bericht verwijderd",
             description=description,
             colour=discord.Color.red(),
             thumbnail=avatar,
@@ -418,7 +700,7 @@ class Actionlog(commands.Cog):
 
         await self.send_log(
             guild,
-            "🧹 BERICHTEN GEPURGED",
+            f"{DELETE_EMOJI} Berichten gepurged",
             description=description,
             colour=discord.Color.red(),
         )
@@ -513,7 +795,7 @@ class Actionlog(commands.Cog):
 
         await self.send_log(
             guild,
-            "✏️ BERICHT AANGEPAST",
+            f"{EDIT_EMOJI} Bericht aangepast",
             description=(
                 f"{author_text} • {display_channel(channel)} • "
                 f"[Bericht]({jump_url})\n\n"
@@ -548,7 +830,7 @@ class Actionlog(commands.Cog):
 
         await self.send_log(
             guild,
-            "🔨 GEBRUIKER GEBANNED",
+            f"{ERROR_EMOJI} Gebruiker gebanned",
             description=(
                 f"{display_user(user)}\n"
                 f"**Door:** {self.executor_text(entry)}\n"
@@ -572,7 +854,7 @@ class Actionlog(commands.Cog):
 
         await self.send_log(
             guild,
-            "🔓 BAN OPGEHEVEN",
+            f"{SUCCESS_EMOJI} Ban opgeheven",
             description=(
                 f"{display_user(user)}\n"
                 f"**Door:** {self.executor_text(entry)}"
@@ -601,7 +883,7 @@ class Actionlog(commands.Cog):
 
             await self.send_log(
                 after.guild,
-                "🏷️ NICKNAME GEWIJZIGD",
+                f"{EDIT_EMOJI} Nickname gewijzigd",
                 description=(
                     f"{display_user(after)}\n"
                     f"`{before.nick or before.name}` → `{after.nick or after.name}`\n"
@@ -658,7 +940,7 @@ class Actionlog(commands.Cog):
 
             await self.send_log(
                 after.guild,
-                "🎭 ROLLEN GEWIJZIGD",
+                f"{ROLES_EMOJI} Rollen gewijzigd",
                 description="\n".join(lines),
                 colour=discord.Color.orange(),
                 thumbnail=after.display_avatar.url,
@@ -738,7 +1020,7 @@ class Actionlog(commands.Cog):
 
         await self.send_log(
             channel.guild,
-            "➕ KANAAL AANGEMAAKT",
+            f"{ADD_EMOJI} Kanaal aangemaakt",
             description=(
                 f"{display_channel(channel)} • `{channel.type}`\n"
                 f"**Door:** {self.executor_text(entry)}"
@@ -769,7 +1051,7 @@ class Actionlog(commands.Cog):
 
         await self.send_log(
             channel.guild,
-            "➖ KANAAL VERWIJDERD",
+            f"{DELETE_EMOJI} Kanaal verwijderd",
             description=(
                 f"**{channel.name}** • `{channel.type}`\n"
                 f"**Door:** {self.executor_text(entry)}"
@@ -883,7 +1165,7 @@ class Actionlog(commands.Cog):
 
         await self.send_log(
             after.guild,
-            "✏️ KANAAL GEWIJZIGD",
+            f"{EDIT_EMOJI} Kanaal gewijzigd",
             description=(
                 f"{display_channel(after)}\n"
                 + "\n".join(changes)
@@ -907,7 +1189,7 @@ class Actionlog(commands.Cog):
 
         await self.send_log(
             role.guild,
-            "➕ ROL AANGEMAAKT",
+            f"{ADD_EMOJI} Rol aangemaakt",
             description=(
                 f"{display_role(role)} • `{colour_text(role.colour)}`\n"
                 f"**Door:** {self.executor_text(entry)}"
@@ -925,7 +1207,7 @@ class Actionlog(commands.Cog):
 
         await self.send_log(
             role.guild,
-            "➖ ROL VERWIJDERD",
+            f"{DELETE_EMOJI} Rol verwijderd",
             description=(
                 f"**{role.name}**\n"
                 f"**Door:** {self.executor_text(entry)}"
@@ -1014,7 +1296,7 @@ class Actionlog(commands.Cog):
 
         await self.send_log(
             after.guild,
-            "✏️ ROL GEWIJZIGD",
+            f"{EDIT_EMOJI} Rol gewijzigd",
             description=(
                 f"{display_role(after)}\n"
                 + "\n".join(changes)
@@ -1081,7 +1363,7 @@ class Actionlog(commands.Cog):
 
         await self.send_log(
             after,
-            "⚙️ SERVERINSTELLINGEN GEWIJZIGD",
+            f"{SETTINGS_EMOJI} Serverinstellingen gewijzigd",
             description=(
                 "\n".join(changes)
                 + f"\n**Door:** {self.executor_text(entry)}"
@@ -1101,53 +1383,156 @@ class Actionlog(commands.Cog):
         self,
         interaction: discord.Interaction,
     ):
-        if interaction.guild is None:
-            await interaction.response.send_message(
-                "❌ Dit werkt alleen in een server.",
-                ephemeral=True,
+        if (
+            interaction.guild is None
+            or not isinstance(
+                interaction.user,
+                discord.Member,
+            )
+        ):
+            await self.send_feedback(
+                interaction,
+                "Dit werkt alleen in een server.",
+                kind="error",
             )
             return
 
-        member = interaction.user
-
-        if not isinstance(member, discord.Member):
+        if not management_access(
+            interaction.user
+        ):
+            await self.send_feedback(
+                interaction,
+                "Je hebt geen toegang tot dit command.",
+                kind="error",
+                title="Geen toegang",
+            )
             return
 
-        allowed = (
-            member.id == interaction.guild.owner_id
-            or member.guild_permissions.administrator
-            or any(
-                role.name.lower() in {"admin", "owner"}
-                for role in member.roles
-            )
+        channel = interaction.guild.get_channel(
+            ACTION_LOG_CHANNEL_ID
         )
 
-        if not allowed:
-            await interaction.response.send_message(
-                "❌ Je hebt geen toegang tot dit command.",
-                ephemeral=True,
+        if not isinstance(
+            channel,
+            discord.TextChannel,
+        ):
+            await self.send_feedback(
+                interaction,
+                "Het Action Log-kanaal kon niet worden gevonden.",
+                kind="error",
             )
             return
 
-        channel = interaction.guild.get_channel(ACTION_LOG_CHANNEL_ID)
-
-        if not isinstance(channel, discord.TextChannel):
-            await interaction.response.send_message(
-                "❌ Het Action Log-kanaal kon niet worden gevonden.",
-                ephemeral=True,
-            )
-            return
-
-        await self.send_log(
+        sent = await self.send_log(
             interaction.guild,
-            "🧪 ACTION LOG TEST",
-            description=f"{display_user(member)} • Alles werkt.",
+            f"{INFO_EMOJI} Action Log test",
+            description=(
+                f"{display_user(interaction.user)}\n"
+                "> └ Components V2 logging werkt."
+            ),
             colour=PURPLE,
-            thumbnail=member.display_avatar.url,
+            thumbnail=interaction.user.display_avatar.url,
+        )
+
+        await self.send_feedback(
+            interaction,
+            (
+                f"Test verstuurd naar {channel.mention}."
+                if sent
+                else "De test kon niet worden verstuurd."
+            ),
+            kind="success" if sent else "error",
+        )
+
+    @actionlog_group.command(
+        name="status",
+        description="Controleer de Action Log en benodigde permissies.",
+    )
+    async def status_command(
+        self,
+        interaction: discord.Interaction,
+    ):
+        if (
+            interaction.guild is None
+            or not isinstance(
+                interaction.user,
+                discord.Member,
+            )
+        ):
+            await self.send_feedback(
+                interaction,
+                "Dit werkt alleen in een server.",
+                kind="error",
+            )
+            return
+
+        if not management_access(
+            interaction.user
+        ):
+            await self.send_feedback(
+                interaction,
+                "Je hebt geen toegang tot dit command.",
+                kind="error",
+                title="Geen toegang",
+            )
+            return
+
+        channel = interaction.guild.get_channel(
+            ACTION_LOG_CHANNEL_ID
         )
 
         await interaction.response.send_message(
-            f"✅ Test verstuurd naar {channel.mention}.",
+            view=ActionLogStatusView(
+                channel=(
+                    channel
+                    if isinstance(
+                        channel,
+                        discord.TextChannel,
+                    )
+                    else None
+                ),
+                bot_member=interaction.guild.me,
+                cache_size=len(self.message_cache),
+                cache_limit=MESSAGE_CACHE_LIMIT,
+                ignored_categories=IGNORED_CHANNEL_CATEGORY_IDS,
+            ),
+            ephemeral=True,
+        )
+
+    @actionlog_group.command(
+        name="info",
+        description="Bekijk wat de Action Log wel en niet registreert.",
+    )
+    async def info_command(
+        self,
+        interaction: discord.Interaction,
+    ):
+        if interaction.guild is None:
+            await self.send_feedback(
+                interaction,
+                "Dit werkt alleen in een server.",
+                kind="error",
+            )
+            return
+
+        body = (
+            "## Berichten\n"
+            "> └ Verwijderen, bulk verwijderen en inhoudswijzigingen.\n\n"
+            "## Leden & moderatie\n"
+            "> └ Bans, unbans, nicknames, rollen en time-outs.\n\n"
+            "## Serverbeheer\n"
+            "> └ Kanalen, categorieën, rollen en serverinstellingen.\n\n"
+            "## Bewust niet gelogd\n"
+            "> └ Join/leave, voice-status en alleen kanaal/rol-volgorde.\n"
+            "> └ Server Stats-kanaalwijzigingen worden genegeerd om ruis te voorkomen."
+        )
+
+        await interaction.response.send_message(
+            view=ActionLogFeedbackView(
+                body,
+                kind="info",
+                title="Action Log",
+            ),
             ephemeral=True,
         )
 

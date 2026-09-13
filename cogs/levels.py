@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import time
 from pathlib import Path
@@ -28,8 +29,42 @@ LEVEL_BADGE = (
     "<:le3:1546518207429345371><:le4:1546518229239730217>"
     "<:le5:1546518249997475880>"
 )
+XP_BADGE = (
+    "<:x1:1547125829643800586><:x2:1547125884744499281>"
+    "<:x3:1547125924665892887><:x4:1547125950150606951>"
+    "<:x5:1547125982631034880><:x6:1547126005041471599>"
+    "<:x7:1547126027371946036><:x8:1547126050947858432>"
+    "<:x9:1547126072464642089>"
+)
 LEVEL_UP_ICON = "<:lvl:1546517601167999127>"
 BRAND_COLOR = discord.Color.from_str("#6C27DA")
+
+SUCCESS_EMOJI = "<:success:1547724072090079313>"
+ERROR_EMOJI = "<:error:1547724070252974131>"
+WARNING_EMOJI = "<:warning:1547724067568746526>"
+INFO_EMOJI = "<:info:1547724036107149413>"
+
+ADD_EMOJI = "<:add:1547724100812931072>"
+EDIT_EMOJI = "<:edit:1547724058894934116>"
+DELETE_EMOJI = "<:delete:1547724056768286750>"
+REFRESH_EMOJI = "<:refresh:1547724055426244618>"
+BACK_EMOJI = "<:back:1547724054038052966>"
+PREVIOUS_EMOJI = "<:previous:1547724049411739748>"
+NEXT_EMOJI = "<:next:1547724052037247106>"
+LOCK_EMOJI = "<:lock:1547724040888786966>"
+NONE_EMOJI = "<:none:1547724038955208794>"
+LIST_EMOJI = "<:list:1547733039361163427>"
+
+# Nieuwe categorie-iconen kunnen later zonder verdere codewijzigingen
+# worden ingevuld. Tot die tijd blijven deze knoppen bewust tekst-only.
+XP_EMOJI = "<:xp:1547737203789144136>"
+TEXT_EMOJI = "<:berichten:1547737207778058250>"
+VOICE_EMOJI = "<:voice:1547737205429243924>"
+NOTIFICATION_EMOJI = "<:notificatie:1547738617659662488>"
+STATUS_EMOJI = "<:status:1547738616501899364>"
+USER_EMOJI = "<:user:1547737210986692679>"
+
+logger = logging.getLogger(__name__)
 PROGRESS_BAR_LENGTH = 12
 
 DEFAULTS = {
@@ -64,6 +99,11 @@ DEFAULTS = {
     "levelup_enabled": "0",
     "levelup_channel_id": "0",
     "level_roles_enabled": "0",
+}
+
+IMPORT_USERNAME_ALIASES = {
+    "matohkie": "matoinkie",
+    "swabemzeh1599": "swabemzen1599",
 }
 
 SOURCE_LABELS = {
@@ -209,9 +249,100 @@ async def init_db() -> None:
         await db.commit()
 
 
+
+
+# ============================================================
+# COMPONENTS V2 HELPERS
+# ============================================================
+
+def component_emoji(value: str | None) -> discord.PartialEmoji | None:
+    if not value:
+        return None
+    try:
+        emoji = discord.PartialEmoji.from_str(value)
+    except Exception:
+        return None
+    return emoji if emoji.name else None
+
+
+def quoted(lines: list[str]) -> str:
+    return "\n".join(f"> └ {line}" for line in lines)
+
+
+def feedback_style(kind: str) -> tuple[str, str, discord.Colour]:
+    if kind == "success":
+        return "Gelukt", SUCCESS_EMOJI, discord.Colour.from_rgb(87, 242, 135)
+    if kind == "error":
+        return "Fout", ERROR_EMOJI, discord.Colour.from_rgb(237, 66, 69)
+    if kind == "warning":
+        return "Let op", WARNING_EMOJI, discord.Colour.from_rgb(254, 231, 92)
+    return "Informatie", INFO_EMOJI, BRAND_COLOR
+
+
+class FeedbackView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: str = "info",
+        title: str | None = None,
+    ):
+        super().__init__(timeout=180)
+        default_title, icon, accent = feedback_style(kind)
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    f"# {icon} {title or default_title}\n"
+                    + "\n".join(
+                        f"> └ {line}"
+                        for line in message.splitlines()
+                        if line.strip()
+                    )
+                ),
+                accent_colour=accent,
+            )
+        )
+
+
+class LevelUpView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        member: discord.Member,
+        old_level: int,
+        new_level: int,
+    ):
+        super().__init__(timeout=None)
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    f"# {LEVEL_UP_ICON} Level up\n"
+                    f"> └ {member.mention} heeft level **{new_level}** bereikt.\n"
+                    f"> └ Van level **{old_level}** naar **{new_level}**."
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+
+# ============================================================
+# MODALS
+# ============================================================
+
 class ValueModal(discord.ui.Modal):
-    def __init__(self, cog: "Levels", owner_id: int, guild_id: int, source: str, current: int):
-        super().__init__(title=f"{SOURCE_LABELS[source]} XP aanpassen")
+    def __init__(
+        self,
+        cog: "Levels",
+        owner_id: int,
+        guild_id: int,
+        source: str,
+        current: int,
+    ):
+        super().__init__(
+            title=f"{SOURCE_LABELS[source]} XP aanpassen",
+            timeout=300,
+        )
         self.cog = cog
         self.owner_id = owner_id
         self.guild_id = guild_id
@@ -226,428 +357,1700 @@ class ValueModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("Dit menu is niet van jou.", ephemeral=True)
+            await self.cog.send_feedback(
+                interaction,
+                "Dit menu is niet van jou.",
+                kind="error",
+            )
             return
+
         try:
             new = int(str(self.value.value).strip())
             if new < 0:
                 raise ValueError
         except ValueError:
-            await interaction.response.send_message("❌ Vul een geldig positief getal in.", ephemeral=True)
+            await self.cog.send_feedback(
+                interaction,
+                "Vul een geldig positief getal in.",
+                kind="error",
+            )
             return
+
         _, value_key = XP_KEYS[self.source]
         old = await self.cog.get_int(self.guild_id, value_key)
-        await self.cog.set_config(self.guild_id, value_key, str(new))
-        await interaction.response.send_message(
-            f"✅ {SOURCE_LABELS[self.source]} is aangepast van **{old} XP** naar **{new} XP**.",
-            ephemeral=True,
+        await self.cog.set_config(
+            self.guild_id,
+            value_key,
+            str(new),
+        )
+
+        await self.cog.send_feedback(
+            interaction,
+            f"{SOURCE_LABELS[self.source]} is aangepast van "
+            f"**{old} XP** naar **{new} XP**.",
+            kind="success",
+            title="XP-waarde aangepast",
         )
 
 
 class CooldownModal(discord.ui.Modal):
-    def __init__(self, cog: "Levels", owner_id: int, guild_id: int, current: int):
-        super().__init__(title="Message XP cooldown")
+    def __init__(
+        self,
+        cog: "Levels",
+        owner_id: int,
+        guild_id: int,
+        current: int,
+    ):
+        super().__init__(
+            title="Message XP cooldown",
+            timeout=300,
+        )
         self.cog = cog
         self.owner_id = owner_id
         self.guild_id = guild_id
-        self.value = discord.ui.TextInput(label="Aantal seconden", default=str(current), max_length=5)
+        self.value = discord.ui.TextInput(
+            label="Aantal seconden",
+            default=str(current),
+            max_length=5,
+        )
         self.add_item(self.value)
 
     async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await self.cog.send_feedback(
+                interaction,
+                "Dit menu is niet van jou.",
+                kind="error",
+            )
+            return
+
         try:
             value = int(str(self.value.value).strip())
             if value < 0:
                 raise ValueError
         except ValueError:
-            await interaction.response.send_message("❌ Vul een geldig aantal seconden in.", ephemeral=True)
+            await self.cog.send_feedback(
+                interaction,
+                "Vul een geldig aantal seconden in.",
+                kind="error",
+            )
             return
-        await self.cog.set_config(self.guild_id, "text_cooldown", str(value))
-        await interaction.response.send_message(
-            f"✅ De message XP cooldown is ingesteld op **{value} seconden**.", ephemeral=True
+
+        await self.cog.set_config(
+            self.guild_id,
+            "text_cooldown",
+            str(value),
+        )
+
+        await self.cog.send_feedback(
+            interaction,
+            f"De message XP cooldown staat nu op **{value} seconden**.",
+            kind="success",
+            title="Cooldown aangepast",
         )
 
 
 class ManualXpModal(discord.ui.Modal):
-    def __init__(self, cog: "Levels", guild_id: int, user_id: int, mode: str):
-        title = {"add": "XP geven", "remove": "XP afnemen", "set": "XP instellen"}[mode]
-        super().__init__(title=title)
+    def __init__(
+        self,
+        cog: "Levels",
+        guild_id: int,
+        user_id: int,
+        mode: str,
+    ):
+        title = {
+            "add": "XP geven",
+            "remove": "XP afnemen",
+            "set": "XP instellen",
+        }[mode]
+        super().__init__(title=title, timeout=300)
+
         self.cog = cog
         self.guild_id = guild_id
         self.user_id = user_id
         self.mode = mode
-        self.value = discord.ui.TextInput(label="Aantal XP", required=True, max_length=12)
+        self.value = discord.ui.TextInput(
+            label="Aantal XP",
+            required=True,
+            max_length=12,
+        )
         self.add_item(self.value)
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not isinstance(interaction.user, discord.Member) or not is_admin(interaction.user):
-            await interaction.response.send_message("❌ Je hebt geen toestemming om het levelsysteem te beheren.", ephemeral=True)
+        if (
+            not isinstance(interaction.user, discord.Member)
+            or not is_admin(interaction.user)
+        ):
+            await self.cog.send_feedback(
+                interaction,
+                "Je hebt geen toestemming om het levelsysteem te beheren.",
+                kind="error",
+            )
             return
+
         try:
             amount = int(str(self.value.value).strip())
             if amount < 0:
                 raise ValueError
         except ValueError:
-            await interaction.response.send_message("❌ Vul een geldig positief getal in.", ephemeral=True)
+            await self.cog.send_feedback(
+                interaction,
+                "Vul een geldig positief getal in.",
+                kind="error",
+            )
             return
-        row = await self.cog.get_user(self.guild_id, self.user_id)
+
+        row = await self.cog.get_user(
+            self.guild_id,
+            self.user_id,
+        )
         current = row[0] if row else 0
+
         if self.mode == "add":
             new_total = current + amount
             delta = amount
         elif self.mode == "remove":
             if amount > current:
-                await interaction.response.send_message("❌ Een gebruiker kan niet onder 0 XP komen.", ephemeral=True)
+                await self.cog.send_feedback(
+                    interaction,
+                    "Een gebruiker kan niet onder **0 XP** komen.",
+                    kind="error",
+                )
                 return
             new_total = current - amount
             delta = -amount
         else:
             new_total = amount
             delta = new_total - current
-        await self.cog.set_total_xp(self.guild_id, self.user_id, new_total)
-        if delta:
-            await self.cog.log_xp(self.guild_id, self.user_id, "manual", delta, f"manual:{interaction.id}", interaction.user.id)
-        member = interaction.guild.get_member(self.user_id) if interaction.guild else None
-        mention = member.mention if member else f"<@{self.user_id}>"
-        await interaction.response.send_message(
-            f"✅ XP van {mention} staat nu op **{fmt_num(new_total)} XP**.", ephemeral=True
+
+        await self.cog.set_total_xp(
+            self.guild_id,
+            self.user_id,
+            new_total,
         )
+
+        if delta:
+            await self.cog.log_xp(
+                self.guild_id,
+                self.user_id,
+                "manual",
+                delta,
+                f"manual:{interaction.id}",
+                interaction.user.id,
+            )
+
+        member = (
+            interaction.guild.get_member(self.user_id)
+            if interaction.guild
+            else None
+        )
+        mention = (
+            member.mention
+            if member
+            else f"<@{self.user_id}>"
+        )
+
+        await self.cog.send_feedback(
+            interaction,
+            f"XP van {mention} staat nu op **{fmt_num(new_total)} XP**.",
+            kind="success",
+            title="XP bijgewerkt",
+        )
+
         if member:
             await self.cog.apply_level_roles(member)
 
 
-class ConfigView(discord.ui.View):
-    def __init__(self, cog: "Levels", owner_id: int, guild_id: int):
+# ============================================================
+# ADMIN CONFIG MENU
+# ============================================================
+
+class ConfigButton(discord.ui.Button):
+    def __init__(
+        self,
+        parent: "ConfigView",
+        action: str,
+        label: str,
+        *,
+        emoji: str | None = None,
+        style: discord.ButtonStyle = discord.ButtonStyle.secondary,
+        disabled: bool = False,
+    ):
+        super().__init__(
+            label=label,
+            emoji=component_emoji(emoji),
+            style=style,
+            disabled=disabled,
+        )
+        self.owner_view = parent
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.owner_view.handle(interaction, self.action)
+
+
+class ExclusionRoleSelect(discord.ui.RoleSelect):
+    def __init__(self, parent: "ConfigView"):
+        super().__init__(
+            placeholder="Rol uitsluiten / weer toestaan…",
+            min_values=1,
+            max_values=1,
+        )
+        self.owner_view = parent
+
+    async def callback(self, interaction: discord.Interaction):
+        role = self.values[0]
+        await self.owner_view.cog.toggle_exclusion(
+            self.owner_view.guild_id,
+            "role",
+            role.id,
+        )
+        await self.owner_view.rebuild(interaction, "exclusions")
+
+
+class UserPicker(discord.ui.UserSelect):
+    def __init__(self, parent: "ConfigView"):
+        super().__init__(
+            placeholder="Kies een gebruiker…",
+            min_values=1,
+            max_values=1,
+        )
+        self.owner_view = parent
+
+    async def callback(self, interaction: discord.Interaction):
+        user = self.values[0]
+
+        if getattr(user, "bot", False):
+            await self.owner_view.cog.send_feedback(
+                interaction,
+                "Bots nemen niet deel aan het levelsysteem.",
+                kind="error",
+            )
+            return
+
+        member = (
+            interaction.guild.get_member(user.id)
+            if interaction.guild
+            else None
+        )
+
+        if member is None:
+            await self.owner_view.cog.send_feedback(
+                interaction,
+                "Deze gebruiker kon niet worden gevonden.",
+                kind="error",
+            )
+            return
+
+        await interaction.response.edit_message(
+            content=None,
+            embed=None,
+            view=await UserManageView.create(
+                self.owner_view.cog,
+                self.owner_view.owner_id,
+                self.owner_view.guild_id,
+                member.id,
+            ),
+        )
+
+
+class ConfigView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        cog: "Levels",
+        owner_id: int,
+        guild_id: int,
+        panel: str = "home",
+    ):
         super().__init__(timeout=300)
         self.cog = cog
         self.owner_id = owner_id
         self.guild_id = guild_id
+        self.panel = panel
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("Dit menu is niet van jou.", ephemeral=True)
-            return False
-        return True
+    @classmethod
+    async def create(
+        cls,
+        cog: "Levels",
+        owner_id: int,
+        guild_id: int,
+        panel: str = "home",
+    ):
+        self = cls(cog, owner_id, guild_id, panel)
+        await self.render()
+        return self
 
-    @discord.ui.button(label="✨ XP-functies", style=discord.ButtonStyle.primary, row=0)
-    async def xp_functions(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content=await self.cog.render_toggle_panel(self.guild_id), view=XpToggleView(self.cog, self.owner_id, self.guild_id))
+    async def interaction_check(
+        self,
+        interaction: discord.Interaction,
+    ) -> bool:
+        if (
+            interaction.user.id == self.owner_id
+            and isinstance(interaction.user, discord.Member)
+            and is_admin(interaction.user)
+        ):
+            return True
 
-    @discord.ui.button(label="🔢 XP-waardes", style=discord.ButtonStyle.secondary, row=0)
-    async def xp_values(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content=await self.cog.render_values_panel(self.guild_id), view=XpValuesView(self.cog, self.owner_id, self.guild_id))
+        await self.cog.send_feedback(
+            interaction,
+            "Dit beheermenu is niet van jou.",
+            kind="error",
+        )
+        return False
 
-    @discord.ui.button(label="💬 Tekst", style=discord.ButtonStyle.secondary, row=1)
-    async def text(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content=await self.cog.render_text_panel(self.guild_id), view=TextConfigView(self.cog, self.owner_id, self.guild_id))
+    async def rebuild(
+        self,
+        interaction: discord.Interaction,
+        panel: str | None = None,
+    ):
+        next_panel = panel or self.panel
 
-    @discord.ui.button(label="🔊 Voice", style=discord.ButtonStyle.secondary, row=1)
-    async def voice(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content=await self.cog.render_voice_panel(self.guild_id), view=VoiceConfigView(self.cog, self.owner_id, self.guild_id))
-
-    @discord.ui.button(label="🏅 Levelrollen", style=discord.ButtonStyle.secondary, row=1)
-    async def roles(self, interaction: discord.Interaction, button: discord.ui.Button):
-        enabled = await self.cog.get_bool(self.guild_id, "level_roles_enabled")
-        roles = await self.cog.get_level_roles(self.guild_id)
-        lines = ["🏅 **LEVELROLLEN**", "", f"Automatisch uitdelen: {'🟢 AAN' if enabled else '⚫ UIT'}"]
-        if roles:
-            lines += ["", *[f"Level **{lvl}** → <@&{rid}>" for lvl, rid, _ in roles]]
-        else:
-            lines += ["", "Nog geen levelrollen opgeslagen."]
-        await interaction.response.edit_message(content="\n".join(lines), view=RolesConfigView(self.cog, self.owner_id, self.guild_id))
-
-    @discord.ui.button(label="📢 Meldingen", style=discord.ButtonStyle.secondary, row=2)
-    async def notifications(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content=await self.cog.render_notifications(self.guild_id), view=NotificationsView(self.cog, self.owner_id, self.guild_id))
-
-    @discord.ui.button(label="🚫 Uitsluitingen", style=discord.ButtonStyle.secondary, row=2)
-    async def exclusions(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content=await self.cog.render_exclusions(self.guild_id), view=ExclusionsView(self.cog, self.owner_id, self.guild_id))
-
-    @discord.ui.button(label="👤 Gebruiker", style=discord.ButtonStyle.secondary, row=3)
-    async def user_manage(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(
-            content="👤 **GEBRUIKER BEHEREN**\n\nKies een gebruiker.",
-            view=UserPickerView(self.cog, self.owner_id, self.guild_id),
+            content=None,
+            embed=None,
+            view=await ConfigView.create(
+                self.cog,
+                self.owner_id,
+                self.guild_id,
+                next_panel,
+            ),
         )
 
-    @discord.ui.button(label="📊 Status", style=discord.ButtonStyle.secondary, row=2)
-    async def status(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content=await self.cog.render_status(self.guild_id), view=BackView(self.cog, self.owner_id, self.guild_id))
-
-
-class BackView(discord.ui.View):
-    def __init__(self, cog, owner_id, guild_id):
-        super().__init__(timeout=300)
-        self.cog, self.owner_id, self.guild_id = cog, owner_id, guild_id
-
-    async def interaction_check(self, interaction):
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("Dit menu is niet van jou.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="↩️ Terug", style=discord.ButtonStyle.secondary)
-    async def back(self, interaction, button):
-        await interaction.response.edit_message(content=self.cog.config_home_text(), view=ConfigView(self.cog, self.owner_id, self.guild_id))
-
-
-class XpToggleView(BackView):
-    def __init__(self, cog, owner_id, guild_id):
-        super().__init__(cog, owner_id, guild_id)
+    async def render(self):
         self.clear_items()
-        for idx, source in enumerate(XP_KEYS):
-            b = discord.ui.Button(label=SOURCE_LABELS[source], style=discord.ButtonStyle.secondary, row=idx // 5)
-            async def callback(interaction: discord.Interaction, src=source):
-                key, _ = XP_KEYS[src]
-                current = await self.cog.get_bool(self.guild_id, key)
-                await self.cog.set_config(self.guild_id, key, "0" if current else "1")
-                await interaction.response.edit_message(content=await self.cog.render_toggle_panel(self.guild_id), view=XpToggleView(self.cog, self.owner_id, self.guild_id))
-            b.callback = callback
-            self.add_item(b)
-        back = discord.ui.Button(label="↩️ Terug", style=discord.ButtonStyle.secondary, row=2)
-        async def back_cb(interaction):
-            await interaction.response.edit_message(content=self.cog.config_home_text(), view=ConfigView(self.cog, self.owner_id, self.guild_id))
-        back.callback = back_cb
-        self.add_item(back)
 
+        panel = self.panel
 
-class XpValuesView(BackView):
-    def __init__(self, cog, owner_id, guild_id):
-        super().__init__(cog, owner_id, guild_id)
-        self.clear_items()
-        for idx, source in enumerate(XP_KEYS):
-            b = discord.ui.Button(label=SOURCE_LABELS[source], style=discord.ButtonStyle.secondary, row=idx // 5)
-            async def callback(interaction: discord.Interaction, src=source):
-                _, value_key = XP_KEYS[src]
-                current = await self.cog.get_int(self.guild_id, value_key)
-                await interaction.response.send_modal(ValueModal(self.cog, self.owner_id, self.guild_id, src, current))
-            b.callback = callback
-            self.add_item(b)
-        back = discord.ui.Button(label="↩️ Terug", style=discord.ButtonStyle.secondary, row=2)
-        async def back_cb(interaction):
-            await interaction.response.edit_message(content=self.cog.config_home_text(), view=ConfigView(self.cog, self.owner_id, self.guild_id))
-        back.callback = back_cb
-        self.add_item(back)
+        if panel == "home":
+            await self.render_home()
+        elif panel == "toggles":
+            await self.render_toggles()
+        elif panel == "values":
+            await self.render_values()
+        elif panel == "text":
+            await self.render_text()
+        elif panel == "voice":
+            await self.render_voice()
+        elif panel == "roles":
+            await self.render_roles()
+        elif panel == "notifications":
+            await self.render_notifications()
+        elif panel == "exclusions":
+            await self.render_exclusions()
+        elif panel == "user":
+            await self.render_user_picker()
+        elif panel == "status":
+            await self.render_status()
+        else:
+            self.panel = "home"
+            await self.render_home()
 
+    async def render_home(self):
+        text = (
+            f"# {LEVEL_BADGE}\n"
+            "## Levels Config\n"
+            "> └ Beheer hier het volledige levelsysteem.\n\n"
+            "## XP\n"
+            "> └ Schakel XP-bronnen in of uit en pas hun waardes aan.\n\n"
+            "## Activiteit\n"
+            "> └ Stel tekst-XP, voice-XP, levelrollen en meldingen in.\n\n"
+            "## Beheer\n"
+            "> └ Uitsluitingen, gebruikersbeheer en systeemstatus."
+        )
 
-class TextConfigView(BackView):
-    @discord.ui.button(label="🔢 XP aanpassen", style=discord.ButtonStyle.primary)
-    async def xp(self, interaction, button):
-        current = await self.cog.get_int(self.guild_id, "xp_text")
-        await interaction.response.send_modal(ValueModal(self.cog, self.owner_id, self.guild_id, "text", current))
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(text),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    ConfigButton(
+                        self,
+                        "nav:toggles",
+                        "XP-functies",
+                        emoji=XP_EMOJI,
+                        style=discord.ButtonStyle.primary,
+                    ),
+                    ConfigButton(
+                        self,
+                        "nav:values",
+                        "XP-waardes",
+                        emoji=EDIT_EMOJI,
+                    ),
+                    ConfigButton(
+                        self,
+                        "nav:text",
+                        "Tekst",
+                        emoji=TEXT_EMOJI,
+                    ),
+                    ConfigButton(
+                        self,
+                        "nav:voice",
+                        "Voice",
+                        emoji=VOICE_EMOJI,
+                    ),
+                ),
+                discord.ui.ActionRow(
+                    ConfigButton(
+                        self,
+                        "nav:roles",
+                        "Levelrollen",
+                        emoji=LEVEL_UP_ICON,
+                    ),
+                    ConfigButton(
+                        self,
+                        "nav:notifications",
+                        "Meldingen",
+                        emoji=NOTIFICATION_EMOJI,
+                    ),
+                    ConfigButton(
+                        self,
+                        "nav:exclusions",
+                        "Uitsluitingen",
+                        emoji=LOCK_EMOJI,
+                    ),
+                    ConfigButton(
+                        self,
+                        "nav:user",
+                        "Gebruiker",
+                        emoji=USER_EMOJI,
+                    ),
+                    ConfigButton(
+                        self,
+                        "nav:status",
+                        "Status",
+                        emoji=STATUS_EMOJI,
+                    ),
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
 
-    @discord.ui.button(label="⏱️ Cooldown aanpassen", style=discord.ButtonStyle.secondary)
-    async def cooldown(self, interaction, button):
-        current = await self.cog.get_int(self.guild_id, "text_cooldown")
-        await interaction.response.send_modal(CooldownModal(self.cog, self.owner_id, self.guild_id, current))
+    async def render_toggles(self):
+        buttons: list[discord.ui.Button] = []
 
-    @discord.ui.button(label="↩️ Terug", style=discord.ButtonStyle.secondary)
-    async def back2(self, interaction, button):
-        await interaction.response.edit_message(content=self.cog.config_home_text(), view=ConfigView(self.cog, self.owner_id, self.guild_id))
+        lines = [
+            f"# {LEVEL_BADGE}",
+            "## XP-functies",
+            "> └ Klik op een functie om deze aan of uit te zetten.",
+            "",
+        ]
 
+        for source, (enabled_key, _) in XP_KEYS.items():
+            enabled = await self.cog.get_bool(
+                self.guild_id,
+                enabled_key,
+            )
+            lines.append(
+                f"> └ **{SOURCE_LABELS[source]}:** "
+                f"{SUCCESS_EMOJI + ' Aan' if enabled else NONE_EMOJI + ' Uit'}"
+            )
 
-class VoiceConfigView(BackView):
-    @discord.ui.button(label="🔢 XP aanpassen", style=discord.ButtonStyle.primary)
-    async def xp(self, interaction, button):
-        current = await self.cog.get_int(self.guild_id, "xp_voice_per_minute")
-        await interaction.response.send_modal(ValueModal(self.cog, self.owner_id, self.guild_id, "voice", current))
+            buttons.append(
+                ConfigButton(
+                    self,
+                    f"toggle:{source}",
+                    SOURCE_LABELS[source],
+                    style=(
+                        discord.ButtonStyle.success
+                        if enabled
+                        else discord.ButtonStyle.secondary
+                    ),
+                )
+            )
 
-    @discord.ui.button(label="👤 Solo voice aan/uit", style=discord.ButtonStyle.secondary)
-    async def solo(self, interaction, button):
-        current = await self.cog.get_bool(self.guild_id, "voice_solo")
-        await self.cog.set_config(self.guild_id, "voice_solo", "0" if current else "1")
-        await self.cog.refresh_all_voice(self.guild_id)
-        await interaction.response.edit_message(content=await self.cog.render_voice_panel(self.guild_id), view=VoiceConfigView(self.cog, self.owner_id, self.guild_id))
+        rows = [
+            discord.ui.ActionRow(*buttons[i : i + 5])
+            for i in range(0, len(buttons), 5)
+        ]
 
-    @discord.ui.button(label="↩️ Terug", style=discord.ButtonStyle.secondary)
-    async def back2(self, interaction, button):
-        await interaction.response.edit_message(content=self.cog.config_home_text(), view=ConfigView(self.cog, self.owner_id, self.guild_id))
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay("\n".join(lines)),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                *rows,
+                discord.ui.ActionRow(
+                    ConfigButton(
+                        self,
+                        "nav:home",
+                        "Terug",
+                        emoji=BACK_EMOJI,
+                    )
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
 
+    async def render_values(self):
+        buttons: list[discord.ui.Button] = []
+        lines = [
+            f"# {LEVEL_BADGE}",
+            "## XP-waardes",
+        ]
 
-class RolesConfigView(BackView):
-    @discord.ui.button(label="🔒 Auto-rollen aan/uit", style=discord.ButtonStyle.secondary)
-    async def toggle(self, interaction, button):
-        current = await self.cog.get_bool(self.guild_id, "level_roles_enabled")
-        await self.cog.set_config(self.guild_id, "level_roles_enabled", "0" if current else "1")
-        await interaction.response.send_message(f"✅ Automatische levelrollen zijn nu **{'UIT' if current else 'AAN'}**.", ephemeral=True)
+        for source, (_, value_key) in XP_KEYS.items():
+            value = await self.cog.get_int(
+                self.guild_id,
+                value_key,
+            )
+            suffix = "/min" if source == "voice" else ""
+            lines.append(
+                f"> └ **{SOURCE_LABELS[source]}:** "
+                f"{fmt_num(value)} XP{suffix}"
+            )
+            buttons.append(
+                ConfigButton(
+                    self,
+                    f"value:{source}",
+                    SOURCE_LABELS[source],
+                    emoji=EDIT_EMOJI,
+                )
+            )
 
-    @discord.ui.button(label="🔄 Rollen controleren", style=discord.ButtonStyle.primary)
-    async def sync(self, interaction, button):
-        if interaction.guild:
+        rows = [
+            discord.ui.ActionRow(*buttons[i : i + 5])
+            for i in range(0, len(buttons), 5)
+        ]
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay("\n".join(lines)),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                *rows,
+                discord.ui.ActionRow(
+                    ConfigButton(
+                        self,
+                        "nav:home",
+                        "Terug",
+                        emoji=BACK_EMOJI,
+                    )
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+    async def render_text(self):
+        value = await self.cog.get_int(
+            self.guild_id,
+            "xp_text",
+        )
+        cooldown = await self.cog.get_int(
+            self.guild_id,
+            "text_cooldown",
+        )
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    f"# {LEVEL_BADGE}\n"
+                    "## Tekst XP\n"
+                    f"> └ XP per bericht: **{fmt_num(value)} XP**\n"
+                    f"> └ Cooldown: **{cooldown} seconden**\n\n"
+                    "## Statistieken\n"
+                    "> └ Berichten blijven meetellen voor activiteit, "
+                    "ook wanneer de XP-cooldown actief is."
+                ),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    ConfigButton(
+                        self,
+                        "value:text",
+                        "XP aanpassen",
+                        emoji=EDIT_EMOJI,
+                        style=discord.ButtonStyle.primary,
+                    ),
+                    ConfigButton(
+                        self,
+                        "cooldown",
+                        "Cooldown aanpassen",
+                        emoji=EDIT_EMOJI,
+                    ),
+                    ConfigButton(
+                        self,
+                        "nav:home",
+                        "Terug",
+                        emoji=BACK_EMOJI,
+                    ),
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+    async def render_voice(self):
+        value = await self.cog.get_int(
+            self.guild_id,
+            "xp_voice_per_minute",
+        )
+        solo = await self.cog.get_bool(
+            self.guild_id,
+            "voice_solo",
+        )
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    f"# {LEVEL_BADGE}\n"
+                    "## Voice XP\n"
+                    f"> └ XP per minuut: **{fmt_num(value)} XP**\n"
+                    f"> └ Solo voice: "
+                    f"**{'Aan' if solo else 'Uit'}**\n\n"
+                    "## Tellen\n"
+                    "> └ Standaard telt voice pas wanneer minimaal "
+                    "twee geldige gebruikers samen in voice zitten."
+                ),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    ConfigButton(
+                        self,
+                        "value:voice",
+                        "XP aanpassen",
+                        emoji=EDIT_EMOJI,
+                        style=discord.ButtonStyle.primary,
+                    ),
+                    ConfigButton(
+                        self,
+                        "voice_solo",
+                        f"Solo voice {'uit' if solo else 'aan'}",
+                        emoji=REFRESH_EMOJI,
+                    ),
+                    ConfigButton(
+                        self,
+                        "nav:home",
+                        "Terug",
+                        emoji=BACK_EMOJI,
+                    ),
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+    async def render_roles(self):
+        enabled = await self.cog.get_bool(
+            self.guild_id,
+            "level_roles_enabled",
+        )
+        roles = await self.cog.get_level_roles(
+            self.guild_id
+        )
+
+        lines = [
+            f"# {LEVEL_BADGE}",
+            "## Levelrollen",
+            f"> └ Automatisch uitdelen: "
+            f"**{'Aan' if enabled else 'Uit'}**",
+        ]
+
+        if roles:
+            lines.append("")
+            lines.append("## Ingesteld")
+            for level, role_id, keep_previous in roles:
+                keep = (
+                    " • vorige behouden"
+                    if keep_previous
+                    else ""
+                )
+                lines.append(
+                    f"> └ Level **{level}** → <@&{role_id}>{keep}"
+                )
+        else:
+            lines.extend(
+                [
+                    "",
+                    "## Ingesteld",
+                    "> └ Nog geen levelrollen opgeslagen.",
+                ]
+            )
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay("\n".join(lines)),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    ConfigButton(
+                        self,
+                        "roles_toggle",
+                        (
+                            "Automatisch uit"
+                            if enabled
+                            else "Automatisch aan"
+                        ),
+                        emoji=REFRESH_EMOJI,
+                    ),
+                    ConfigButton(
+                        self,
+                        "roles_sync",
+                        "Rollen controleren",
+                        emoji=REFRESH_EMOJI,
+                        style=discord.ButtonStyle.primary,
+                    ),
+                    ConfigButton(
+                        self,
+                        "nav:home",
+                        "Terug",
+                        emoji=BACK_EMOJI,
+                    ),
+                ),
+                discord.ui.TextDisplay(
+                    "-# Rollen toevoegen of verwijderen kan met "
+                    "`/levels role-set` en `/levels role-remove`."
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+    async def render_notifications(self):
+        enabled = await self.cog.get_bool(
+            self.guild_id,
+            "levelup_enabled",
+        )
+        channel_id = await self.cog.get_int(
+            self.guild_id,
+            "levelup_channel_id",
+        )
+
+        channel_text = (
+            f"<#{channel_id}>"
+            if channel_id
+            else "Niet ingesteld"
+        )
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    f"# {LEVEL_BADGE}\n"
+                    "## Meldingen\n"
+                    f"> └ Level-up meldingen: "
+                    f"**{'Aan' if enabled else 'Uit'}**\n"
+                    f"> └ Kanaal: {channel_text}"
+                ),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    ConfigButton(
+                        self,
+                        "notifications_toggle",
+                        (
+                            "Meldingen uit"
+                            if enabled
+                            else "Meldingen aan"
+                        ),
+                        emoji=REFRESH_EMOJI,
+                    ),
+                    ConfigButton(
+                        self,
+                        "notifications_channel",
+                        "Gebruik dit kanaal",
+                        emoji=EDIT_EMOJI,
+                        style=discord.ButtonStyle.primary,
+                    ),
+                    ConfigButton(
+                        self,
+                        "nav:home",
+                        "Terug",
+                        emoji=BACK_EMOJI,
+                    ),
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+    async def render_exclusions(self):
+        counts = await self.cog.get_exclusion_counts(
+            self.guild_id
+        )
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    f"# {LEVEL_BADGE}\n"
+                    "## XP-uitsluitingen\n"
+                    f"> └ Tekstkanalen: **{counts.get('text_channel', 0)}**\n"
+                    f"> └ Voicekanalen: **{counts.get('voice_channel', 0)}**\n"
+                    f"> └ Rollen: **{counts.get('role', 0)}**\n\n"
+                    "## Aanpassen\n"
+                    "> └ Klik opnieuw op een uitgesloten onderdeel "
+                    "om het weer toe te staan."
+                ),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    ConfigButton(
+                        self,
+                        "exclude_text",
+                        "Dit tekstkanaal",
+                        emoji=TEXT_EMOJI,
+                    ),
+                    ConfigButton(
+                        self,
+                        "exclude_voice",
+                        "Mijn voicekanaal",
+                        emoji=VOICE_EMOJI,
+                    ),
+                    ConfigButton(
+                        self,
+                        "nav:home",
+                        "Terug",
+                        emoji=BACK_EMOJI,
+                    ),
+                ),
+                discord.ui.ActionRow(
+                    ExclusionRoleSelect(self)
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+    async def render_user_picker(self):
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    f"# {LEVEL_BADGE}\n"
+                    "## Gebruiker beheren\n"
+                    "> └ Kies een gebruiker om XP, geschiedenis "
+                    "en levelrollen te beheren."
+                ),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    UserPicker(self)
+                ),
+                discord.ui.ActionRow(
+                    ConfigButton(
+                        self,
+                        "nav:home",
+                        "Terug",
+                        emoji=BACK_EMOJI,
+                    )
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+    async def render_status(self):
+        status_text = await self.cog.render_status(
+            self.guild_id
+        )
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(status_text),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    ConfigButton(
+                        self,
+                        "nav:home",
+                        "Terug",
+                        emoji=BACK_EMOJI,
+                    )
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+    async def handle(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+    ):
+        if action.startswith("nav:"):
+            await self.rebuild(
+                interaction,
+                action.split(":", 1)[1],
+            )
+            return
+
+        if action.startswith("toggle:"):
+            source = action.split(":", 1)[1]
+            enabled_key, _ = XP_KEYS[source]
+            current = await self.cog.get_bool(
+                self.guild_id,
+                enabled_key,
+            )
+            await self.cog.set_config(
+                self.guild_id,
+                enabled_key,
+                "0" if current else "1",
+            )
+            await self.rebuild(interaction, "toggles")
+            return
+
+        if action.startswith("value:"):
+            source = action.split(":", 1)[1]
+            _, value_key = XP_KEYS[source]
+            current = await self.cog.get_int(
+                self.guild_id,
+                value_key,
+            )
+            await interaction.response.send_modal(
+                ValueModal(
+                    self.cog,
+                    self.owner_id,
+                    self.guild_id,
+                    source,
+                    current,
+                )
+            )
+            return
+
+        if action == "cooldown":
+            current = await self.cog.get_int(
+                self.guild_id,
+                "text_cooldown",
+            )
+            await interaction.response.send_modal(
+                CooldownModal(
+                    self.cog,
+                    self.owner_id,
+                    self.guild_id,
+                    current,
+                )
+            )
+            return
+
+        if action == "voice_solo":
+            current = await self.cog.get_bool(
+                self.guild_id,
+                "voice_solo",
+            )
+            await self.cog.set_config(
+                self.guild_id,
+                "voice_solo",
+                "0" if current else "1",
+            )
+            await self.cog.refresh_all_voice(
+                self.guild_id
+            )
+            await self.rebuild(interaction, "voice")
+            return
+
+        if action == "roles_toggle":
+            current = await self.cog.get_bool(
+                self.guild_id,
+                "level_roles_enabled",
+            )
+            await self.cog.set_config(
+                self.guild_id,
+                "level_roles_enabled",
+                "0" if current else "1",
+            )
+            await self.rebuild(interaction, "roles")
+            return
+
+        if action == "roles_sync":
+            if interaction.guild is None:
+                return
+
+            await interaction.response.defer(
+                ephemeral=True,
+                thinking=True,
+            )
+
             changed = 0
             for member in interaction.guild.members:
                 if not member.bot:
-                    changed += await self.cog.apply_level_roles(member)
-            await interaction.response.send_message(f"✅ Levelrollen gecontroleerd. **{changed}** wijziging(en).", ephemeral=True)
+                    changed += await self.cog.apply_level_roles(
+                        member
+                    )
 
-    @discord.ui.button(label="↩️ Terug", style=discord.ButtonStyle.secondary)
-    async def back2(self, interaction, button):
-        await interaction.response.edit_message(content=self.cog.config_home_text(), view=ConfigView(self.cog, self.owner_id, self.guild_id))
-
-
-class NotificationsView(BackView):
-    @discord.ui.button(label="🔔 Level-up aan/uit", style=discord.ButtonStyle.secondary)
-    async def toggle(self, interaction, button):
-        current = await self.cog.get_bool(self.guild_id, "levelup_enabled")
-        await self.cog.set_config(self.guild_id, "levelup_enabled", "0" if current else "1")
-        await interaction.response.edit_message(content=await self.cog.render_notifications(self.guild_id), view=NotificationsView(self.cog, self.owner_id, self.guild_id))
-
-    @discord.ui.button(label="📍 Gebruik dit kanaal", style=discord.ButtonStyle.primary)
-    async def channel(self, interaction, button):
-        await self.cog.set_config(self.guild_id, "levelup_channel_id", str(interaction.channel_id))
-        await interaction.response.edit_message(content=await self.cog.render_notifications(self.guild_id), view=NotificationsView(self.cog, self.owner_id, self.guild_id))
-
-    @discord.ui.button(label="↩️ Terug", style=discord.ButtonStyle.secondary)
-    async def back2(self, interaction, button):
-        await interaction.response.edit_message(content=self.cog.config_home_text(), view=ConfigView(self.cog, self.owner_id, self.guild_id))
-
-
-class ExclusionsView(BackView):
-    def __init__(self, cog, owner_id, guild_id):
-        super().__init__(cog, owner_id, guild_id)
-        self.add_item(ExclusionRoleSelect(cog, owner_id, guild_id))
-
-    @discord.ui.button(label="💬 Dit tekstkanaal", style=discord.ButtonStyle.secondary)
-    async def text_channel(self, interaction, button):
-        await self.cog.toggle_exclusion(self.guild_id, "text_channel", interaction.channel_id)
-        await interaction.response.edit_message(content=await self.cog.render_exclusions(self.guild_id), view=ExclusionsView(self.cog, self.owner_id, self.guild_id))
-
-    @discord.ui.button(label="🔊 Mijn voicekanaal", style=discord.ButtonStyle.secondary)
-    async def voice_channel(self, interaction, button):
-        if not isinstance(interaction.user, discord.Member) or not interaction.user.voice or not interaction.user.voice.channel:
-            await interaction.response.send_message("❌ Je zit niet in een voicekanaal.", ephemeral=True)
+            await self.cog.send_feedback(
+                interaction,
+                f"Levelrollen gecontroleerd. "
+                f"**{changed} wijziging(en)** uitgevoerd.",
+                kind="success",
+                title="Levelrollen gecontroleerd",
+            )
             return
-        await self.cog.toggle_exclusion(self.guild_id, "voice_channel", interaction.user.voice.channel.id)
-        await interaction.response.edit_message(content=await self.cog.render_exclusions(self.guild_id), view=ExclusionsView(self.cog, self.owner_id, self.guild_id))
 
-    @discord.ui.button(label="↩️ Terug", style=discord.ButtonStyle.secondary)
-    async def back2(self, interaction, button):
-        await interaction.response.edit_message(content=self.cog.config_home_text(), view=ConfigView(self.cog, self.owner_id, self.guild_id))
+        if action == "notifications_toggle":
+            current = await self.cog.get_bool(
+                self.guild_id,
+                "levelup_enabled",
+            )
+            await self.cog.set_config(
+                self.guild_id,
+                "levelup_enabled",
+                "0" if current else "1",
+            )
+            await self.rebuild(
+                interaction,
+                "notifications",
+            )
+            return
+
+        if action == "notifications_channel":
+            if interaction.channel_id is None:
+                await self.cog.send_feedback(
+                    interaction,
+                    "Dit kanaal kon niet worden ingesteld.",
+                    kind="error",
+                )
+                return
+
+            await self.cog.set_config(
+                self.guild_id,
+                "levelup_channel_id",
+                str(interaction.channel_id),
+            )
+            await self.rebuild(
+                interaction,
+                "notifications",
+            )
+            return
+
+        if action == "exclude_text":
+            if interaction.channel_id is None:
+                return
+
+            await self.cog.toggle_exclusion(
+                self.guild_id,
+                "text_channel",
+                interaction.channel_id,
+            )
+            await self.rebuild(
+                interaction,
+                "exclusions",
+            )
+            return
+
+        if action == "exclude_voice":
+            member = interaction.user
+
+            if (
+                not isinstance(member, discord.Member)
+                or not member.voice
+                or not member.voice.channel
+            ):
+                await self.cog.send_feedback(
+                    interaction,
+                    "Je zit niet in een voicekanaal.",
+                    kind="error",
+                )
+                return
+
+            await self.cog.toggle_exclusion(
+                self.guild_id,
+                "voice_channel",
+                member.voice.channel.id,
+            )
+            await self.cog.refresh_all_voice(
+                self.guild_id
+            )
+            await self.rebuild(
+                interaction,
+                "exclusions",
+            )
 
 
-class UserPicker(discord.ui.UserSelect):
-    def __init__(self, cog, owner_id, guild_id):
-        super().__init__(placeholder="Kies een gebruiker...", min_values=1, max_values=1, row=0)
-        self.cog, self.owner_id, self.guild_id = cog, owner_id, guild_id
+# ============================================================
+# USER MANAGEMENT
+# ============================================================
+
+class UserManageButton(discord.ui.Button):
+    def __init__(
+        self,
+        parent: "UserManageView",
+        action: str,
+        label: str,
+        *,
+        emoji: str | None = None,
+        style: discord.ButtonStyle = discord.ButtonStyle.secondary,
+    ):
+        super().__init__(
+            label=label,
+            emoji=component_emoji(emoji),
+            style=style,
+        )
+        self.owner_view = parent
+        self.action = action
 
     async def callback(self, interaction: discord.Interaction):
-        user = self.values[0]
-        if getattr(user, "bot", False):
-            await interaction.response.send_message("❌ Bots nemen niet deel aan het levelsysteem.", ephemeral=True)
-            return
-        member = interaction.guild.get_member(user.id) if interaction.guild else None
+        await self.owner_view.handle(interaction, self.action)
+
+
+class UserManageView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        cog: "Levels",
+        owner_id: int,
+        guild_id: int,
+        user_id: int,
+    ):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.guild_id = guild_id
+        self.user_id = user_id
+
+    @classmethod
+    async def create(
+        cls,
+        cog: "Levels",
+        owner_id: int,
+        guild_id: int,
+        user_id: int,
+    ):
+        self = cls(
+            cog,
+            owner_id,
+            guild_id,
+            user_id,
+        )
+        await self.render()
+        return self
+
+    async def interaction_check(
+        self,
+        interaction: discord.Interaction,
+    ) -> bool:
+        if (
+            interaction.user.id == self.owner_id
+            and isinstance(interaction.user, discord.Member)
+            and is_admin(interaction.user)
+        ):
+            return True
+
+        await self.cog.send_feedback(
+            interaction,
+            "Dit beheermenu is niet van jou.",
+            kind="error",
+        )
+        return False
+
+    async def render(self):
+        guild = self.cog.bot.get_guild(
+            self.guild_id
+        )
+        member = (
+            guild.get_member(self.user_id)
+            if guild
+            else None
+        )
+
         if member is None:
-            await interaction.response.send_message("❌ Deze gebruiker kon niet worden gevonden.", ephemeral=True)
+            body = (
+                f"# {LEVEL_BADGE}\n"
+                "## Gebruiker beheren\n"
+                f"> └ {ERROR_EMOJI} Deze gebruiker is niet meer beschikbaar."
+            )
+        else:
+            body = await self.cog.render_user_manage(
+                member
+            )
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(body),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    UserManageButton(
+                        self,
+                        "add",
+                        "XP geven",
+                        emoji=ADD_EMOJI,
+                        style=discord.ButtonStyle.success,
+                    ),
+                    UserManageButton(
+                        self,
+                        "remove",
+                        "XP afnemen",
+                        emoji=DELETE_EMOJI,
+                        style=discord.ButtonStyle.danger,
+                    ),
+                    UserManageButton(
+                        self,
+                        "set",
+                        "XP instellen",
+                        emoji=EDIT_EMOJI,
+                        style=discord.ButtonStyle.primary,
+                    ),
+                ),
+                discord.ui.ActionRow(
+                    UserManageButton(
+                        self,
+                        "history",
+                        "XP geschiedenis",
+                        emoji=LIST_EMOJI,
+                    ),
+                    UserManageButton(
+                        self,
+                        "back",
+                        "Terug",
+                        emoji=BACK_EMOJI,
+                    ),
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+    async def handle(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+    ):
+        if action in {"add", "remove", "set"}:
+            await interaction.response.send_modal(
+                ManualXpModal(
+                    self.cog,
+                    self.guild_id,
+                    self.user_id,
+                    action,
+                )
+            )
             return
-        await interaction.response.edit_message(
-            content=await self.cog.render_user_manage(member),
-            view=UserManageView(self.cog, self.owner_id, self.guild_id, member.id),
+
+        if action == "history":
+            history = await self.cog.render_history(
+                self.guild_id,
+                self.user_id,
+            )
+            await interaction.response.send_message(
+                view=SimplePanelView(
+                    "XP geschiedenis",
+                    history,
+                    icon=LIST_EMOJI,
+                ),
+                ephemeral=True,
+            )
+            return
+
+        if action == "back":
+            await interaction.response.edit_message(
+                content=None,
+                embed=None,
+                view=await ConfigView.create(
+                    self.cog,
+                    self.owner_id,
+                    self.guild_id,
+                    "user",
+                ),
+            )
+
+
+class SimplePanelView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        title: str,
+        body: str,
+        *,
+        icon: str = INFO_EMOJI,
+        accent: discord.Colour = BRAND_COLOR,
+    ):
+        super().__init__(timeout=180)
+
+        if body.lstrip().startswith("# "):
+            display_text = body
+        else:
+            quoted_body = "\n".join(
+                f"> └ {line}"
+                for line in body.splitlines()
+                if line.strip()
+            )
+            display_text = (
+                f"# {icon} {title}\n"
+                f"{quoted_body}"
+            )
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(display_text),
+                accent_colour=accent,
+            )
         )
 
 
-class UserPickerView(BackView):
-    def __init__(self, cog, owner_id, guild_id):
-        super().__init__(cog, owner_id, guild_id)
-        self.clear_items()
-        self.add_item(UserPicker(cog, owner_id, guild_id))
-        back = discord.ui.Button(label="↩️ Terug", style=discord.ButtonStyle.secondary, row=1)
-        async def back_cb(interaction):
-            await interaction.response.edit_message(content=cog.config_home_text(), view=ConfigView(cog, owner_id, guild_id))
-        back.callback = back_cb
-        self.add_item(back)
+# ============================================================
+# PUBLIC PROFILE
+# ============================================================
+
+class LevelProfileView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        member: discord.Member,
+        *,
+        level: int,
+        rank: int,
+        total: int,
+        messages: int,
+        voice: int,
+        progress: int,
+        span: int,
+        percent: int,
+        needed: int,
+        source_totals: dict[str, int],
+        banner: str = LEVEL_BADGE,
+        header_icon: str = LEVEL_UP_ICON,
+        show_avatar: bool = False,
+    ):
+        super().__init__(timeout=None)
+
+        extra_sources = [
+            ("wave", "Zwaaien"),
+            ("reaction", "Reacties"),
+            ("invite", "Invites"),
+            ("congrats", "Feliciteren"),
+            ("birthday", "Verjaardag"),
+            ("game_vote", "Game votes"),
+            ("game_suggestion", "Game suggesties"),
+            ("game_success", "Succesvolle games"),
+            ("suggestion", "Suggesties"),
+            ("suggestion_vote", "Suggestiestemmen"),
+            ("suggestion_success", "Succesvolle suggesties"),
+        ]
+
+        extra_lines = [
+            f"> └ **{label}:** "
+            f"{fmt_num(source_totals.get(source, 0))} XP"
+            for source, label in extra_sources
+            if source_totals.get(source, 0)
+        ]
+
+        if not extra_lines:
+            extra_lines = [
+                "> └ Nog geen extra XP-bronnen geregistreerd."
+            ]
+
+        header = (
+            f"# {banner}\n"
+            f"## {header_icon} Level {level} • "
+            f"{discord.utils.escape_markdown(member.display_name)}\n"
+            f"> └ Rank **#{rank}** • **{fmt_num(total)} XP totaal**"
+        )
+
+        details = (
+            "## Progressie\n"
+            f"> └ **{percent}%** • "
+            f"{fmt_num(progress)} / {fmt_num(span)} XP in dit level\n"
+            f"> └ Nog **{fmt_num(needed)} XP** tot level **{level + 1}**\n\n"
+            "## Activiteit\n"
+            f"> └ Berichten: **{fmt_num(messages)}**\n"
+            f"> └ Voice: **{fmt_hours(voice)} uur**\n\n"
+            "## Extra XP\n"
+            + "\n".join(extra_lines)
+        )
+
+        children: list[discord.ui.Item] = []
+
+        if show_avatar:
+            children.append(
+                discord.ui.Section(
+                    discord.ui.TextDisplay(header),
+                    accessory=discord.ui.Thumbnail(
+                        str(member.display_avatar.url),
+                        description=f"Profielfoto van {member.display_name}",
+                    ),
+                )
+            )
+        else:
+            children.append(
+                discord.ui.TextDisplay(header)
+            )
+
+        children.extend(
+            [
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.TextDisplay(details),
+                discord.ui.TextDisplay(
+                    "-# LEVENLOOS • Levels"
+                ),
+            ]
+        )
+
+        self.add_item(
+            discord.ui.Container(
+                *children,
+                accent_colour=BRAND_COLOR,
+            )
+        )
 
 
-class UserManageView(BackView):
-    def __init__(self, cog, owner_id, guild_id, user_id):
-        super().__init__(cog, owner_id, guild_id)
-        self.user_id = user_id
+# ============================================================
+# LEADERBOARD
+# ============================================================
 
-    @discord.ui.button(label="➕ XP geven", style=discord.ButtonStyle.success)
-    async def add(self, interaction, button):
-        await interaction.response.send_modal(ManualXpModal(self.cog, self.guild_id, self.user_id, "add"))
-
-    @discord.ui.button(label="➖ XP afnemen", style=discord.ButtonStyle.danger)
-    async def remove(self, interaction, button):
-        await interaction.response.send_modal(ManualXpModal(self.cog, self.guild_id, self.user_id, "remove"))
-
-    @discord.ui.button(label="✏️ XP instellen", style=discord.ButtonStyle.primary)
-    async def set(self, interaction, button):
-        await interaction.response.send_modal(ManualXpModal(self.cog, self.guild_id, self.user_id, "set"))
-
-    @discord.ui.button(label="📋 XP geschiedenis", style=discord.ButtonStyle.secondary, row=1)
-    async def history(self, interaction, button):
-        await interaction.response.send_message(await self.cog.render_history(self.guild_id, self.user_id), ephemeral=True)
-
-    @discord.ui.button(label="↩️ Terug", style=discord.ButtonStyle.secondary, row=1)
-    async def back_user(self, interaction, button):
-        await interaction.response.edit_message(content="👤 **GEBRUIKER BEHEREN**\n\nKies een gebruiker.", view=UserPickerView(self.cog, self.owner_id, self.guild_id))
-
-
-class ExclusionRoleSelect(discord.ui.RoleSelect):
-    def __init__(self, cog, owner_id, guild_id):
-        super().__init__(placeholder="Rol uitsluiten / weer toestaan...", min_values=1, max_values=1, row=1)
-        self.cog, self.owner_id, self.guild_id = cog, owner_id, guild_id
+class LeaderboardButton(discord.ui.Button):
+    def __init__(
+        self,
+        parent: "LeaderboardView",
+        action: str,
+        label: str,
+        *,
+        emoji: str | None = None,
+        style: discord.ButtonStyle = discord.ButtonStyle.secondary,
+        disabled: bool = False,
+    ):
+        super().__init__(
+            label=label,
+            emoji=component_emoji(emoji),
+            style=style,
+            disabled=disabled,
+        )
+        self.owner_view = parent
+        self.action = action
 
     async def callback(self, interaction: discord.Interaction):
-        role = self.values[0]
-        await self.cog.toggle_exclusion(self.guild_id, "role", role.id)
-        await interaction.response.edit_message(content=await self.cog.render_exclusions(self.guild_id), view=ExclusionsView(self.cog, self.owner_id, self.guild_id))
+        await self.owner_view.handle(interaction, self.action)
 
 
-class LeaderboardView(discord.ui.View):
-    def __init__(self, cog: "Levels", guild_id: int, user_id: int, sort_key: str = "xp", page: int = 0):
+class LeaderboardView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        cog: "Levels",
+        guild_id: int,
+        user_id: int,
+        sort_key: str = "xp",
+        page: int = 0,
+    ):
         super().__init__(timeout=180)
-        self.cog, self.guild_id, self.user_id = cog, guild_id, user_id
-        self.sort_key, self.page = sort_key, page
-
-    async def refresh(self, interaction: discord.Interaction):
-        embed, pages = await self.cog.render_leaderboard(self.guild_id, self.sort_key, self.page)
-        self.page = min(self.page, max(0, pages - 1))
-
-        # Laat direct zien welk filter actief is.
-        self.xp.style = discord.ButtonStyle.primary if self.sort_key == "xp" else discord.ButtonStyle.secondary
-        self.messages.style = discord.ButtonStyle.primary if self.sort_key == "messages" else discord.ButtonStyle.secondary
-        self.voice.style = discord.ButtonStyle.primary if self.sort_key == "voice" else discord.ButtonStyle.secondary
-
-        await interaction.response.edit_message(content=None, embed=embed, view=self)
-
-    @discord.ui.button(label="◀️", style=discord.ButtonStyle.secondary)
-    async def prev(self, interaction, button):
-        self.page = max(0, self.page - 1)
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="🏆 XP", style=discord.ButtonStyle.primary)
-    async def xp(self, interaction, button):
-        self.sort_key, self.page = "xp", 0
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="💬 Berichten", style=discord.ButtonStyle.secondary)
-    async def messages(self, interaction, button):
-        self.sort_key, self.page = "messages", 0
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="🔊 Voice", style=discord.ButtonStyle.secondary)
-    async def voice(self, interaction, button):
-        self.sort_key, self.page = "voice", 0
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="▶️", style=discord.ButtonStyle.secondary)
-    async def next(self, interaction, button):
-        _, pages = await self.cog.render_leaderboard(self.guild_id, self.sort_key, self.page)
-        self.page = min(max(0, pages - 1), self.page + 1)
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="👤 Mijn positie", style=discord.ButtonStyle.secondary, row=1)
-    async def mine(self, interaction, button):
-        page = await self.cog.page_for_user(self.guild_id, self.user_id, self.sort_key)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.user_id = user_id
+        self.sort_key = sort_key
         self.page = page
+        self.pages = 1
+
+    @classmethod
+    async def create(
+        cls,
+        cog: "Levels",
+        guild_id: int,
+        user_id: int,
+        sort_key: str = "xp",
+        page: int = 0,
+    ):
+        self = cls(
+            cog,
+            guild_id,
+            user_id,
+            sort_key,
+            page,
+        )
+        await self.render()
+        return self
+
+    async def interaction_check(
+        self,
+        interaction: discord.Interaction,
+    ) -> bool:
+        if interaction.user.id == self.user_id:
+            return True
+
+        await self.cog.send_feedback(
+            interaction,
+            "Open zelf `/top` om het leaderboard te bedienen.",
+            kind="error",
+        )
+        return False
+
+    async def render(self):
+        self.clear_items()
+
+        body, pages, normalized_page = (
+            await self.cog.render_leaderboard(
+                self.guild_id,
+                self.sort_key,
+                self.page,
+            )
+        )
+
+        self.pages = pages
+        self.page = normalized_page
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(body),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    LeaderboardButton(
+                        self,
+                        "prev",
+                        "Vorige",
+                        emoji=PREVIOUS_EMOJI,
+                        disabled=self.page <= 0,
+                    ),
+                    LeaderboardButton(
+                        self,
+                        "xp",
+                        "XP",
+                        emoji=XP_EMOJI,
+                        style=(
+                            discord.ButtonStyle.primary
+                            if self.sort_key == "xp"
+                            else discord.ButtonStyle.secondary
+                        ),
+                    ),
+                    LeaderboardButton(
+                        self,
+                        "messages",
+                        "Berichten",
+                        emoji=TEXT_EMOJI,
+                        style=(
+                            discord.ButtonStyle.primary
+                            if self.sort_key == "messages"
+                            else discord.ButtonStyle.secondary
+                        ),
+                    ),
+                    LeaderboardButton(
+                        self,
+                        "voice",
+                        "Voice",
+                        emoji=VOICE_EMOJI,
+                        style=(
+                            discord.ButtonStyle.primary
+                            if self.sort_key == "voice"
+                            else discord.ButtonStyle.secondary
+                        ),
+                    ),
+                    LeaderboardButton(
+                        self,
+                        "next",
+                        "Volgende",
+                        emoji=NEXT_EMOJI,
+                        disabled=self.page >= self.pages - 1,
+                    ),
+                ),
+                discord.ui.ActionRow(
+                    LeaderboardButton(
+                        self,
+                        "mine",
+                        "Mijn positie",
+                        emoji=USER_EMOJI,
+                    ),
+                ),
+                discord.ui.TextDisplay(
+                    f"-# Pagina {self.page + 1}/{self.pages}"
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
+
+    async def refresh(
+        self,
+        interaction: discord.Interaction,
+    ):
+        await self.render()
+        await interaction.response.edit_message(
+            content=None,
+            embed=None,
+            view=self,
+        )
+
+    async def handle(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+    ):
+        if action == "prev":
+            self.page = max(0, self.page - 1)
+        elif action == "next":
+            self.page = min(
+                self.pages - 1,
+                self.page + 1,
+            )
+        elif action in {"xp", "messages", "voice"}:
+            self.sort_key = action
+            self.page = 0
+        elif action == "mine":
+            self.page = await self.cog.page_for_user(
+                self.guild_id,
+                self.user_id,
+                self.sort_key,
+            )
+
         await self.refresh(interaction)
 
 
-class ImportPreviewView(discord.ui.View):
+# ============================================================
+# IMPORT UI
+# ============================================================
+
+class ImportPreviewButton(discord.ui.Button):
+    def __init__(
+        self,
+        parent: "ImportPreviewView",
+        action: str,
+        label: str,
+        *,
+        emoji: str | None = None,
+        disabled: bool = False,
+    ):
+        super().__init__(
+            label=label,
+            emoji=component_emoji(emoji),
+            style=discord.ButtonStyle.secondary,
+            disabled=disabled,
+        )
+        self.owner_view = parent
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.action == "prev":
+            self.owner_view.page = max(
+                0,
+                self.owner_view.page - 1,
+            )
+        else:
+            self.owner_view.page = min(
+                self.owner_view.total_pages - 1,
+                self.owner_view.page + 1,
+            )
+
+        self.owner_view.render()
+
+        await interaction.response.edit_message(
+            content=None,
+            embed=None,
+            view=self.owner_view,
+        )
+
+
+class ImportPreviewView(discord.ui.LayoutView):
     PAGE_SIZE = 20
 
-    def __init__(self, cog: "Levels", owner_id: int, guild_id: int, matched, unmatched, duplicates, page: int = 0):
+    def __init__(
+        self,
+        cog: "Levels",
+        owner_id: int,
+        guild_id: int,
+        matched,
+        unmatched,
+        duplicates,
+        page: int = 0,
+    ):
         super().__init__(timeout=300)
         self.cog = cog
         self.owner_id = owner_id
@@ -656,81 +2059,361 @@ class ImportPreviewView(discord.ui.View):
         self.unmatched = unmatched
         self.duplicates = duplicates
         self.page = page
+        self.total_pages = 1
+        self.render()
 
-    async def interaction_check(self, interaction: discord.Interaction):
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("Dit menu is niet van jou.", ephemeral=True)
-            return False
-        return True
+    async def interaction_check(
+        self,
+        interaction: discord.Interaction,
+    ) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+
+        await self.cog.send_feedback(
+            interaction,
+            "Dit importmenu is niet van jou.",
+            kind="error",
+        )
+        return False
 
     def render(self):
-        total_pages = max(1, math.ceil(len(self.matched) / self.PAGE_SIZE))
-        self.page = max(0, min(self.page, total_pages - 1))
+        self.clear_items()
+
+        self.total_pages = max(
+            1,
+            math.ceil(
+                len(self.matched) / self.PAGE_SIZE
+            ),
+        )
+        self.page = max(
+            0,
+            min(
+                self.page,
+                self.total_pages - 1,
+            ),
+        )
+
         start = self.page * self.PAGE_SIZE
         end = start + self.PAGE_SIZE
 
         lines = [
-            "📥 **ACTIVITYRANK IMPORT PREVIEW**",
+            f"# {LEVEL_BADGE}",
+            "## ActivityRank import preview",
+            f"> └ {SUCCESS_EMOJI} Gekoppeld: **{len(self.matched)}**",
+            f"> └ {WARNING_EMOJI} Niet gevonden: **{len(self.unmatched)}**",
+            f"> └ {ERROR_EMOJI} Onduidelijk: **{len(self.duplicates)}**",
             "",
-            f"✅ {len(self.matched)} leden gekoppeld",
-            f"⚠️ {len(self.unmatched)} niet gevonden",
-            f"❌ {len(self.duplicates)} onduidelijke matches",
-            "",
-            "Er is nog niets aangepast.",
-            "",
-            f"**Matches {start + 1 if self.matched else 0}-{min(end, len(self.matched))} van {len(self.matched)}:**",
+            "## Matches",
         ]
 
         for row, member in self.matched[start:end]:
-            lines.append(f"✅ {row['username']} → {member.mention}")
+            lines.append(
+                f"> └ `{row['username']}` → {member.mention}"
+            )
+
+        if not self.matched:
+            lines.append("> └ Geen matches.")
 
         if self.unmatched:
-            lines += ["", "**Niet gevonden:**"]
-            lines.extend(f"⚠️ {row['username']}" for row in self.unmatched)
+            lines.extend(
+                [
+                    "",
+                    "## Niet gevonden",
+                    *[
+                        f"> └ `{row['username']}`"
+                        for row in self.unmatched[:15]
+                    ],
+                ]
+            )
 
         if self.duplicates:
-            lines += ["", "**Onduidelijke matches:**"]
-            for row, candidates in self.duplicates:
-                names = ", ".join(member.mention for member in candidates[:5])
-                lines.append(f"❌ {row['username']} → {names}")
+            lines.extend(
+                [
+                    "",
+                    "## Onduidelijke matches",
+                ]
+            )
 
-        lines += ["", f"Pagina **{self.page + 1}/{total_pages}**"]
-        return "\n".join(lines)[:1990]
+            for row, candidates in self.duplicates[:10]:
+                names = ", ".join(
+                    member.mention
+                    for member in candidates[:5]
+                )
+                lines.append(
+                    f"> └ `{row['username']}` → {names}"
+                )
 
-    @discord.ui.button(label="◀️", style=discord.ButtonStyle.secondary)
-    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.page = max(0, self.page - 1)
-        await interaction.response.edit_message(content=self.render(), view=self)
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay("\n".join(lines)),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    ImportPreviewButton(
+                        self,
+                        "prev",
+                        "Vorige",
+                        emoji=PREVIOUS_EMOJI,
+                        disabled=self.page <= 0,
+                    ),
+                    ImportPreviewButton(
+                        self,
+                        "next",
+                        "Volgende",
+                        emoji=NEXT_EMOJI,
+                        disabled=(
+                            self.page
+                            >= self.total_pages - 1
+                        ),
+                    ),
+                ),
+                discord.ui.TextDisplay(
+                    f"-# Pagina {self.page + 1}/{self.total_pages} • "
+                    "Er is nog niets aangepast."
+                ),
+                accent_colour=BRAND_COLOR,
+            )
+        )
 
-    @discord.ui.button(label="▶️", style=discord.ButtonStyle.secondary)
-    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
-        total_pages = max(1, math.ceil(len(self.matched) / self.PAGE_SIZE))
-        self.page = min(total_pages - 1, self.page + 1)
-        await interaction.response.edit_message(content=self.render(), view=self)
+
+class ImportConfirmButton(discord.ui.Button):
+    def __init__(
+        self,
+        parent: "ImportConfirmView",
+        action: str,
+    ):
+        if action == "go":
+            label = "Importeren"
+            emoji = SUCCESS_EMOJI
+            style = discord.ButtonStyle.success
+        else:
+            label = "Annuleren"
+            emoji = NONE_EMOJI
+            style = discord.ButtonStyle.secondary
+
+        super().__init__(
+            label=label,
+            emoji=component_emoji(emoji),
+            style=style,
+        )
+        self.owner_view = parent
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.action == "cancel":
+            await interaction.response.edit_message(
+                content=None,
+                embed=None,
+                view=FeedbackView(
+                    "De ActivityRank-import is geannuleerd.",
+                    kind="info",
+                    title="Import geannuleerd",
+                ),
+            )
+            return
+
+        await interaction.response.defer(
+            ephemeral=True,
+            thinking=True,
+        )
+
+        result = await self.owner_view.cog.run_import(
+            interaction.guild
+        )
+
+        kind = (
+            "warning"
+            if "al uitgevoerd" in result.lower()
+            else "success"
+        )
+
+        await self.owner_view.cog.send_feedback(
+            interaction,
+            result,
+            kind=kind,
+            title="ActivityRank import",
+        )
 
 
-class ImportConfirmView(discord.ui.View):
-    def __init__(self, cog: "Levels", owner_id: int, guild_id: int):
+class ImportConfirmView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        cog: "Levels",
+        owner_id: int,
+        guild_id: int,
+    ):
         super().__init__(timeout=60)
-        self.cog, self.owner_id, self.guild_id = cog, owner_id, guild_id
+        self.cog = cog
+        self.owner_id = owner_id
+        self.guild_id = guild_id
 
-    async def interaction_check(self, interaction):
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("Dit menu is niet van jou.", ephemeral=True)
-            return False
-        return True
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    f"# {WARNING_EMOJI} ActivityRank import\n"
+                    "> └ Deze actie importeert historische XP, berichten "
+                    "en voice-tijd naar `levels.db`.\n"
+                    "> └ Bestaande ActivityRank-XP wordt exact overgenomen "
+                    "en niet opnieuw berekend."
+                ),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    ImportConfirmButton(self, "go"),
+                    ImportConfirmButton(self, "cancel"),
+                ),
+                accent_colour=discord.Colour.from_rgb(
+                    254,
+                    231,
+                    92,
+                ),
+            )
+        )
 
-    @discord.ui.button(label="✅ Importeren", style=discord.ButtonStyle.success)
-    async def go(self, interaction, button):
-        await interaction.response.defer(ephemeral=True)
-        result = await self.cog.run_import(interaction.guild)
-        await interaction.followup.send(result, ephemeral=True)
-        self.stop()
+    async def interaction_check(
+        self,
+        interaction: discord.Interaction,
+    ) -> bool:
+        if (
+            interaction.user.id == self.owner_id
+            and isinstance(interaction.user, discord.Member)
+            and is_admin(interaction.user)
+        ):
+            return True
 
-    @discord.ui.button(label="❌ Annuleren", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction, button):
-        await interaction.response.edit_message(content="❌ Import geannuleerd.", view=None)
-        self.stop()
+        await self.cog.send_feedback(
+            interaction,
+            "Dit importmenu is niet van jou.",
+            kind="error",
+        )
+        return False
+
+
+# ============================================================
+# XP RECALCULATION CONFIRMATION
+# ============================================================
+
+class RecalculateButton(discord.ui.Button):
+    def __init__(
+        self,
+        parent: "RecalculateConfirmView",
+        action: str,
+    ):
+        if action == "confirm":
+            label = "XP herberekenen"
+            emoji = REFRESH_EMOJI
+            style = discord.ButtonStyle.danger
+        else:
+            label = "Annuleren"
+            emoji = NONE_EMOJI
+            style = discord.ButtonStyle.secondary
+
+        super().__init__(
+            label=label,
+            emoji=component_emoji(emoji),
+            style=style,
+        )
+        self.owner_view = parent
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.action == "cancel":
+            await interaction.response.edit_message(
+                content=None,
+                embed=None,
+                view=FeedbackView(
+                    "De herberekening is geannuleerd.",
+                    kind="info",
+                    title="Geannuleerd",
+                ),
+            )
+            return
+
+        await interaction.response.defer(
+            ephemeral=True,
+            thinking=True,
+        )
+        await self.owner_view.cog.perform_recalculate(
+            interaction,
+        )
+
+
+class RecalculateConfirmView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        cog: "Levels",
+        owner_id: int,
+        guild_id: int,
+        text_rate: int,
+        voice_rate: int,
+        text_enabled: bool,
+        voice_enabled: bool,
+    ):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.guild_id = guild_id
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    f"# {WARNING_EMOJI} XP herberekenen\n"
+                    "> └ Dit vervangt de huidige `total_xp` van alle leden.\n\n"
+                    "## Formule\n"
+                    f"> └ Berichten × **{text_rate} XP** "
+                    f"({'aan' if text_enabled else 'uit'})\n"
+                    f"> └ Volledige voice-minuten × **{voice_rate} XP** "
+                    f"({'aan' if voice_enabled else 'uit'})\n\n"
+                    "## Belangrijk\n"
+                    "> └ Andere XP-bronnen zoals waves, invites, reacties, "
+                    "suggesties, verjaardagen en handmatige XP tellen daarna "
+                    "**niet** meer mee in `total_xp`.\n"
+                    "> └ De opgeslagen aantallen berichten en voice-tijd "
+                    "blijven behouden."
+                ),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    RecalculateButton(
+                        self,
+                        "confirm",
+                    ),
+                    RecalculateButton(
+                        self,
+                        "cancel",
+                    ),
+                ),
+                accent_colour=discord.Colour.from_rgb(
+                    254,
+                    231,
+                    92,
+                ),
+            )
+        )
+
+    async def interaction_check(
+        self,
+        interaction: discord.Interaction,
+    ) -> bool:
+        if (
+            interaction.user.id == self.owner_id
+            and isinstance(interaction.user, discord.Member)
+            and is_admin(interaction.user)
+        ):
+            return True
+
+        await self.cog.send_feedback(
+            interaction,
+            "Dit bevestigingsmenu is niet van jou.",
+            kind="error",
+        )
+        return False
 
 
 class Levels(commands.Cog):
@@ -744,6 +2427,11 @@ class Levels(commands.Cog):
         self._voice_lock = asyncio.Lock()
 
     async def cog_load(self):
+        if not hasattr(discord.ui, "LayoutView"):
+            raise RuntimeError(
+                "Levels vereist discord.py 2.6+ voor Components V2."
+            )
+
         await init_db()
         for guild in self.bot.guilds:
             await self.ensure_defaults(guild.id)
@@ -842,15 +2530,42 @@ class Levels(commands.Cog):
             await self.on_level_up(member, level_from_xp(old_total), level_from_xp(new_total))
         return amount
 
-    async def on_level_up(self, member: discord.Member, old_level: int, new_level: int):
+    async def on_level_up(
+        self,
+        member: discord.Member,
+        old_level: int,
+        new_level: int,
+    ):
         await self.apply_level_roles(member)
-        if not await self.get_bool(member.guild.id, "levelup_enabled"):
+
+        if not await self.get_bool(
+            member.guild.id,
+            "levelup_enabled",
+        ):
             return
-        channel_id = await self.get_int(member.guild.id, "levelup_channel_id")
+
+        channel_id = await self.get_int(
+            member.guild.id,
+            "levelup_channel_id",
+        )
         channel = member.guild.get_channel(channel_id)
+
         if not isinstance(channel, discord.TextChannel):
             return
-        await channel.send(f"{LEVEL_UP_ICON} {member.mention} heeft level **{new_level}** bereikt!")
+
+        try:
+            await channel.send(
+                view=LevelUpView(
+                    member,
+                    old_level,
+                    new_level,
+                )
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception(
+                "Level-up melding versturen mislukt voor user %s.",
+                member.id,
+            )
 
     async def excluded(self, guild_id: int, kind: str, target_id: int) -> bool:
         async with aiosqlite.connect(DATABASE_PATH) as db:
@@ -1092,242 +2807,535 @@ class Levels(commands.Cog):
             return 0
         return changed
 
+
+
+    # ========================================================
+    # COMPONENTS V2 FEEDBACK
+    # ========================================================
+
+    async def send_feedback(
+        self,
+        interaction: discord.Interaction,
+        message: str,
+        *,
+        kind: str = "info",
+        title: str | None = None,
+    ):
+        view = FeedbackView(
+            message,
+            kind=kind,
+            title=title,
+        )
+
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                view=view,
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                view=view,
+                ephemeral=True,
+            )
+
+    # ========================================================
+    # RENDER HELPERS
+    # ========================================================
+
     def config_home_text(self) -> str:
         return (
-            "⚙️ **LEVELS CONFIG**\n\n"
-            "Beheer hier het volledige levelsysteem.\n\n"
-            "✨ XP-functies\n🔢 XP-waardes\n💬 Tekst\n🔊 Voice\n"
-            "🏅 Levelrollen\n📢 Meldingen\n🚫 Uitsluitingen\n📊 Status"
+            f"# {LEVEL_BADGE}\n"
+            "## Levels Config\n"
+            "> └ Beheer hier het volledige levelsysteem."
         )
 
-    async def render_toggle_panel(self, guild_id):
-        lines = ["✨ **XP-FUNCTIES**", "", "Klik op een functie om deze aan of uit te zetten.", ""]
-        for src, (enabled_key, _) in XP_KEYS.items():
-            lines.append(f"{'🟢' if await self.get_bool(guild_id, enabled_key) else '⚫'} {SOURCE_LABELS[src]}")
-        return "\n".join(lines)
+    async def render_toggle_panel(
+        self,
+        guild_id: int,
+    ) -> str:
+        lines = [
+            f"# {LEVEL_BADGE}",
+            "## XP-functies",
+        ]
 
-    async def render_values_panel(self, guild_id):
-        lines = ["🔢 **XP-WAARDES**", ""]
-        for src, (_, value_key) in XP_KEYS.items():
-            value = await self.get_int(guild_id, value_key)
-            suffix = "/min" if src == "voice" else ""
-            lines.append(f"{SOURCE_LABELS[src]}: **{value} XP{suffix}**")
-        return "\n".join(lines)
-
-    async def render_text_panel(self, guild_id):
-        return (
-            "💬 **TEKST XP**\n\n"
-            f"XP per bericht: **{await self.get_int(guild_id, 'xp_text')} XP**\n"
-            f"Cooldown: **{await self.get_int(guild_id, 'text_cooldown')} seconden**\n\n"
-            "Berichten blijven altijd meetellen voor de statistieken, ook wanneer er door de cooldown geen XP wordt gegeven."
-        )
-
-    async def render_voice_panel(self, guild_id):
-        return (
-            "🔊 **VOICE XP**\n\n"
-            f"XP per minuut: **{await self.get_int(guild_id, 'xp_voice_per_minute')} XP**\n"
-            f"Solo voice: **{'AAN' if await self.get_bool(guild_id, 'voice_solo') else 'UIT'}**\n\n"
-            "Standaard telt voice alleen wanneer minimaal twee geldige gebruikers samen in voice zitten."
-        )
-
-    async def render_notifications(self, guild_id):
-        cid = await self.get_int(guild_id, "levelup_channel_id")
-        return f"📢 **MELDINGEN**\n\nLevel-up meldingen: **{'AAN' if await self.get_bool(guild_id, 'levelup_enabled') else 'UIT'}**\nKanaal: {f'<#{cid}>' if cid else 'niet ingesteld'}"
-
-    async def render_exclusions(self, guild_id):
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            cur = await db.execute("SELECT kind,COUNT(*) FROM levels_exclusions WHERE guild_id=? GROUP BY kind", (guild_id,))
-            counts = dict(await cur.fetchall())
-        return f"🚫 **XP-UITSLUITINGEN**\n\nTekstkanalen: **{counts.get('text_channel',0)}**\nVoicekanalen: **{counts.get('voice_channel',0)}**\nRollen: **{counts.get('role',0)}**"
-
-    async def render_status(self, guild_id):
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            cur = await db.execute("SELECT COUNT(*),COALESCE(SUM(total_xp),0),COALESCE(SUM(text_messages),0),COALESCE(SUM(voice_seconds),0) FROM levels_users WHERE guild_id=?", (guild_id,))
-            users, xp, msgs, voice = await cur.fetchone()
-        return (
-            "📊 **LEVELS STATUS**\n\n"
-            "Status: 🟢 Actief\nDatabase: `levels.db`\n\n"
-            f"Spelers geregistreerd: **{users}**\nTotale XP: **{fmt_num(xp)}**\n"
-            f"💬 Berichten geregistreerd: **{fmt_num(msgs)}**\n🔊 Voice geregistreerd: **{fmt_hours(voice)} uur**\n\n"
-            "ActivityRank migratie: **testfase**\n"
-            f"Levelrollen eigen bot: **{'AAN' if await self.get_bool(guild_id, 'level_roles_enabled') else 'UIT'}**"
-        )
-
-    async def render_user_manage(self, member: discord.Member):
-        total, messages, voice = await self.get_user(member.guild.id, member.id)
-        return (
-            f"👤 **{member.display_name}**\n\n"
-            f"<:lvl:1546517601167999127> Level **{level_from_xp(total)}**\n"
-            f"🏆 Rank **#{await self.rank_for_user(member.guild.id, member.id)}**\n"
-            f"✨ **{fmt_num(total)} XP**\n\n"
-            f"💬 {fmt_num(messages)} berichten\n"
-            f"🔊 {fmt_hours(voice)} uur voice"
-        )
-
-    async def render_history(self, guild_id: int, user_id: int):
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            cur = await db.execute(
-                "SELECT source,xp,actor_id,created_at FROM levels_xp_log WHERE guild_id=? AND user_id=? ORDER BY id DESC LIMIT 15",
-                (guild_id, user_id),
+        for source, (enabled_key, _) in XP_KEYS.items():
+            enabled = await self.get_bool(
+                guild_id,
+                enabled_key,
             )
-            rows = await cur.fetchall()
-        if not rows:
-            return "Er zijn nog geen bijzondere XP-transacties voor deze gebruiker."
-        lines = ["📋 **XP-GESCHIEDENIS**", ""]
-        for source, xp, actor_id, created_at in rows:
-            sign = "+" if xp >= 0 else ""
-            label = SOURCE_LABELS.get(source, source.replace("_", " ").title())
-            actor = f" • door <@{actor_id}>" if actor_id and source == "manual" else ""
-            lines.append(f"{sign}{fmt_num(xp)} XP • {label}{actor}")
+            lines.append(
+                f"> └ **{SOURCE_LABELS[source]}:** "
+                f"{'Aan' if enabled else 'Uit'}"
+            )
+
         return "\n".join(lines)
 
-    async def rank_for_user(self, guild_id, user_id):
-        rows = await self.leaderboard_rows(guild_id, "xp")
-        for index, row in enumerate(rows, start=1):
-            if row[0] == user_id:
-                return index
-        return 0
+    async def render_values_panel(
+        self,
+        guild_id: int,
+    ) -> str:
+        lines = [
+            f"# {LEVEL_BADGE}",
+            "## XP-waardes",
+        ]
 
-    async def get_xp_source_totals(self, guild_id: int, user_id: int) -> dict[str, int]:
+        for source, (_, value_key) in XP_KEYS.items():
+            value = await self.get_int(
+                guild_id,
+                value_key,
+            )
+            suffix = "/min" if source == "voice" else ""
+            lines.append(
+                f"> └ **{SOURCE_LABELS[source]}:** "
+                f"{value} XP{suffix}"
+            )
+
+        return "\n".join(lines)
+
+    async def render_text_panel(
+        self,
+        guild_id: int,
+    ) -> str:
+        return (
+            f"# {LEVEL_BADGE}\n"
+            "## Tekst XP\n"
+            f"> └ XP per bericht: "
+            f"**{await self.get_int(guild_id, 'xp_text')} XP**\n"
+            f"> └ Cooldown: "
+            f"**{await self.get_int(guild_id, 'text_cooldown')} seconden**\n\n"
+            "## Statistieken\n"
+            "> └ Berichten blijven altijd meetellen voor activiteit, "
+            "ook wanneer de cooldown geen XP geeft."
+        )
+
+    async def render_voice_panel(
+        self,
+        guild_id: int,
+    ) -> str:
+        return (
+            f"# {LEVEL_BADGE}\n"
+            "## Voice XP\n"
+            f"> └ XP per minuut: "
+            f"**{await self.get_int(guild_id, 'xp_voice_per_minute')} XP**\n"
+            f"> └ Solo voice: "
+            f"**{'Aan' if await self.get_bool(guild_id, 'voice_solo') else 'Uit'}**\n\n"
+            "## Tellen\n"
+            "> └ Standaard telt voice alleen wanneer minimaal "
+            "twee geldige gebruikers samen in voice zitten."
+        )
+
+    async def render_notifications(
+        self,
+        guild_id: int,
+    ) -> str:
+        channel_id = await self.get_int(
+            guild_id,
+            "levelup_channel_id",
+        )
+
+        return (
+            f"# {LEVEL_BADGE}\n"
+            "## Meldingen\n"
+            f"> └ Level-up meldingen: "
+            f"**{'Aan' if await self.get_bool(guild_id, 'levelup_enabled') else 'Uit'}**\n"
+            f"> └ Kanaal: "
+            f"{f'<#{channel_id}>' if channel_id else 'Niet ingesteld'}"
+        )
+
+    async def get_exclusion_counts(
+        self,
+        guild_id: int,
+    ) -> dict[str, int]:
         async with aiosqlite.connect(DATABASE_PATH) as db:
             cursor = await db.execute(
                 """
-                SELECT source, COALESCE(SUM(xp), 0)
+                SELECT kind, COUNT(*)
+                FROM levels_exclusions
+                WHERE guild_id = ?
+                GROUP BY kind
+                """,
+                (guild_id,),
+            )
+            return {
+                str(kind): int(count)
+                for kind, count in await cursor.fetchall()
+            }
+
+    async def render_exclusions(
+        self,
+        guild_id: int,
+    ) -> str:
+        counts = await self.get_exclusion_counts(
+            guild_id
+        )
+
+        return (
+            f"# {LEVEL_BADGE}\n"
+            "## XP-uitsluitingen\n"
+            f"> └ Tekstkanalen: "
+            f"**{counts.get('text_channel', 0)}**\n"
+            f"> └ Voicekanalen: "
+            f"**{counts.get('voice_channel', 0)}**\n"
+            f"> └ Rollen: "
+            f"**{counts.get('role', 0)}**"
+        )
+
+    async def render_status(
+        self,
+        guild_id: int,
+    ) -> str:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            cursor = await db.execute(
+                """
+                SELECT
+                    COUNT(*),
+                    COALESCE(SUM(total_xp), 0),
+                    COALESCE(SUM(text_messages), 0),
+                    COALESCE(SUM(voice_seconds), 0)
+                FROM levels_users
+                WHERE guild_id = ?
+                """,
+                (guild_id,),
+            )
+
+            users, xp, messages, voice = (
+                await cursor.fetchone()
+            )
+
+        roles_enabled = await self.get_bool(
+            guild_id,
+            "level_roles_enabled",
+        )
+
+        return (
+            f"# {LEVEL_BADGE}\n"
+            "## Levels Status\n"
+            f"> └ {SUCCESS_EMOJI} Systeem actief\n"
+            "> └ Database: `levels.db`\n\n"
+            "## Statistieken\n"
+            f"> └ Spelers geregistreerd: **{users}**\n"
+            f"> └ Totale XP: **{fmt_num(xp)}**\n"
+            f"> └ Berichten geregistreerd: **{fmt_num(messages)}**\n"
+            f"> └ Voice geregistreerd: **{fmt_hours(voice)} uur**\n\n"
+            "## Levelrollen\n"
+            f"> └ Eigen botrollen: "
+            f"**{'Aan' if roles_enabled else 'Uit'}**"
+        )
+
+    async def render_user_manage(
+        self,
+        member: discord.Member,
+    ) -> str:
+        total, messages, voice = await self.get_user(
+            member.guild.id,
+            member.id,
+        )
+
+        return (
+            f"# {LEVEL_BADGE}\n"
+            f"## {discord.utils.escape_markdown(member.display_name)}\n"
+            f"> └ {LEVEL_UP_ICON} Level "
+            f"**{level_from_xp(total)}**\n"
+            f"> └ Rank "
+            f"**#{await self.rank_for_user(member.guild.id, member.id)}**\n"
+            f"> └ **{fmt_num(total)} XP**\n\n"
+            "## Activiteit\n"
+            f"> └ Berichten: **{fmt_num(messages)}**\n"
+            f"> └ Voice: **{fmt_hours(voice)} uur**"
+        )
+
+    async def render_history(
+        self,
+        guild_id: int,
+        user_id: int,
+    ) -> str:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            cursor = await db.execute(
+                """
+                SELECT
+                    source,
+                    xp,
+                    actor_id,
+                    created_at
                 FROM levels_xp_log
-                WHERE guild_id = ? AND user_id = ?
+                WHERE guild_id = ?
+                  AND user_id = ?
+                ORDER BY id DESC
+                LIMIT 15
+                """,
+                (
+                    guild_id,
+                    user_id,
+                ),
+            )
+            rows = await cursor.fetchall()
+
+        if not rows:
+            return "Er zijn nog geen bijzondere XP-transacties."
+
+        lines = []
+
+        for source, xp, actor_id, created_at in rows:
+            sign = "+" if xp >= 0 else ""
+            label = SOURCE_LABELS.get(
+                source,
+                source.replace("_", " ").title(),
+            )
+            actor = (
+                f" • door <@{actor_id}>"
+                if actor_id and source == "manual"
+                else ""
+            )
+            lines.append(
+                f"{sign}{fmt_num(xp)} XP • {label}{actor}"
+            )
+
+        return "\n".join(lines)
+
+    async def rank_for_user(
+        self,
+        guild_id: int,
+        user_id: int,
+    ):
+        rows = await self.leaderboard_rows(
+            guild_id,
+            "xp",
+        )
+
+        for index, row in enumerate(
+            rows,
+            start=1,
+        ):
+            if row[0] == user_id:
+                return index
+
+        return 0
+
+    async def get_xp_source_totals(
+        self,
+        guild_id: int,
+        user_id: int,
+    ) -> dict[str, int]:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            cursor = await db.execute(
+                """
+                SELECT
+                    source,
+                    COALESCE(SUM(xp), 0)
+                FROM levels_xp_log
+                WHERE guild_id = ?
+                  AND user_id = ?
                 GROUP BY source
                 """,
-                (guild_id, user_id),
+                (
+                    guild_id,
+                    user_id,
+                ),
             )
-            return {source: int(total) for source, total in await cursor.fetchall()}
 
-    async def render_profile(self, member: discord.Member) -> discord.Embed:
-        total, messages, voice = await self.get_user(member.guild.id, member.id)
+            return {
+                source: int(total)
+                for source, total in await cursor.fetchall()
+            }
+
+    async def render_profile(
+        self,
+        member: discord.Member,
+        *,
+        banner: str = LEVEL_BADGE,
+        header_icon: str = LEVEL_UP_ICON,
+        show_avatar: bool = False,
+    ) -> LevelProfileView:
+        total, messages, voice = await self.get_user(
+            member.guild.id,
+            member.id,
+        )
+
         level = level_from_xp(total)
-        rank = await self.rank_for_user(member.guild.id, member.id)
+        rank = await self.rank_for_user(
+            member.guild.id,
+            member.id,
+        )
         next_xp = xp_for_level(level + 1)
-        needed = max(0, next_xp - total)
-        bar, percent, progress, span = progress_bar(total, level)
-        source_totals = await self.get_xp_source_totals(member.guild.id, member.id)
-
-        embed = discord.Embed(
-            title=f"{LEVEL_UP_ICON} Level {level} • {member.display_name}",
-            color=BRAND_COLOR,
+        needed = max(
+            0,
+            next_xp - total,
         )
-        embed.set_thumbnail(url=member.display_avatar.url)
-
-        embed.add_field(
-            name="📊 Progressie",
-            value=(
-                f"`{bar}` **{percent}%**\n"
-                f"**{fmt_num(progress)} / {fmt_num(span)} XP** in dit level\n"
-                f"✨ **{fmt_num(total)} XP totaal** • 🏆 Rank **#{rank}**\n"
-                f"Nog **{fmt_num(needed)} XP** tot level **{level + 1}**"
-            ),
-            inline=False,
+        _, percent, progress, span = progress_bar(
+            total,
+            level,
+        )
+        source_totals = await self.get_xp_source_totals(
+            member.guild.id,
+            member.id,
         )
 
-        embed.add_field(
-            name="🎮 Activiteit",
-            value=(
-                f"💬 **{fmt_num(messages)}** berichten\n"
-                f"🔊 **{fmt_hours(voice)} uur** voice"
-            ),
-            inline=True,
+        return LevelProfileView(
+            member,
+            level=level,
+            rank=rank,
+            total=total,
+            messages=messages,
+            voice=voice,
+            progress=progress,
+            span=span,
+            percent=percent,
+            needed=needed,
+            source_totals=source_totals,
+            banner=banner,
+            header_icon=header_icon,
+            show_avatar=show_avatar,
         )
 
-        special_sources = [
-            ("wave", "👋 Zwaaien"),
-            ("reaction", "❤️ Reacties"),
-            ("invite", "📨 Invites"),
-            ("congrats", "🎉 Feliciteren"),
-            ("birthday", "🎂 Verjaardag"),
-            ("game_vote", "🎮 Game votes"),
-            ("game_suggestion", "🕹️ Game suggesties"),
-            ("game_success", "🏆 Succesvolle games"),
-            ("suggestion", "💡 Suggesties"),
-            ("suggestion_vote", "🗳️ Suggestiestemmen"),
-            ("suggestion_success", "✅ Succesvolle suggesties"),
-        ]
-        source_lines = [
-            f"{label}: **{fmt_num(source_totals.get(source, 0))} XP**"
-            for source, label in special_sources
-        ]
-
-        embed.add_field(
-            name="✨ Extra XP",
-            value="\n".join(source_lines),
-            inline=True,
+    async def leaderboard_rows(
+        self,
+        guild_id: int,
+        sort_key: str,
+    ):
+        order = {
+            "xp": "total_xp",
+            "messages": "text_messages",
+            "voice": "voice_seconds",
+        }.get(
+            sort_key,
+            "total_xp",
         )
-        embed.set_footer(text="LEVENLOOS • Levels")
-        return embed
 
-    async def leaderboard_rows(self, guild_id, sort_key):
-        order = {"xp": "total_xp", "messages": "text_messages", "voice": "voice_seconds"}.get(sort_key, "total_xp")
         async with aiosqlite.connect(DATABASE_PATH) as db:
-            cur = await db.execute(f"SELECT user_id,total_xp,text_messages,voice_seconds FROM levels_users WHERE guild_id=? ORDER BY {order} DESC,total_xp DESC,user_id ASC", (guild_id,))
-            rows = await cur.fetchall()
-        guild = self.bot.get_guild(guild_id)
+            cursor = await db.execute(
+                f"""
+                SELECT
+                    user_id,
+                    total_xp,
+                    text_messages,
+                    voice_seconds
+                FROM levels_users
+                WHERE guild_id = ?
+                ORDER BY
+                    {order} DESC,
+                    total_xp DESC,
+                    user_id ASC
+                """,
+                (guild_id,),
+            )
+            rows = await cursor.fetchall()
+
+        guild = self.bot.get_guild(
+            guild_id
+        )
+
         if guild is None:
             return rows
-        return [row for row in rows if guild.get_member(row[0]) is not None]
 
-    async def render_leaderboard(self, guild_id, sort_key="xp", page=0):
-        rows = await self.leaderboard_rows(guild_id, sort_key)
-        pages = max(1, math.ceil(len(rows) / 10))
-        page = max(0, min(page, pages - 1))
-        start = page * 10
-        end = min(start + 10, len(rows))
-
-        titles = {
-            "xp": "TOTALE XP",
-            "messages": "BERICHTEN",
-            "voice": "VOICE",
-        }
-
-        guild = self.bot.get_guild(guild_id)
-        medals = ["🥇", "🥈", "🥉"]
-        lines = [
-            f"**{titles.get(sort_key, 'TOTALE XP')}**",
-            f"└ Top {start + 1 if rows else 0}-{end} van **{len(rows)} spelers**",
+        return [
+            row
+            for row in rows
+            if (
+                (member := guild.get_member(row[0]))
+                is not None
+                and not member.bot
+            )
         ]
 
-        for idx, row in enumerate(rows[start:end], start=start + 1):
-            uid, total, msgs, voice = row
-            member = guild.get_member(uid) if guild else None
+    async def render_leaderboard(
+        self,
+        guild_id: int,
+        sort_key: str = "xp",
+        page: int = 0,
+    ) -> tuple[str, int, int]:
+        rows = await self.leaderboard_rows(
+            guild_id,
+            sort_key,
+        )
 
-            # Geen mentions in het leaderboard: zo pingt /top nooit gebruikers.
-            name = discord.utils.escape_markdown(member.display_name) if member else f"Onbekende gebruiker ({uid})"
-            rank = medals[idx - 1] if idx <= 3 else f"**#{idx}**"
+        pages = max(
+            1,
+            math.ceil(len(rows) / 10),
+        )
+        page = max(
+            0,
+            min(
+                page,
+                pages - 1,
+            ),
+        )
+
+        start = page * 10
+        end = min(
+            start + 10,
+            len(rows),
+        )
+
+        titles = {
+            "xp": f"{XP_EMOJI} Totale XP",
+            "messages": "Berichten",
+            "voice": "Voice",
+        }
+
+        guild = self.bot.get_guild(
+            guild_id
+        )
+
+        lines = [
+            f"# {LEADERBOARD_BADGE}",
+            f"## {titles.get(sort_key, 'Totale XP')}",
+            f"> └ Top "
+            f"{start + 1 if rows else 0}-{end} "
+            f"van **{len(rows)} spelers**",
+            "",
+        ]
+
+        for index, row in enumerate(
+            rows[start:end],
+            start=start + 1,
+        ):
+            user_id, total, messages, voice = row
+            member = (
+                guild.get_member(user_id)
+                if guild
+                else None
+            )
+            name = (
+                discord.utils.escape_markdown(
+                    member.display_name
+                )
+                if member
+                else f"Onbekende gebruiker ({user_id})"
+            )
             level = level_from_xp(total)
+
+            lines.append(
+                f"**#{index} {name}**"
+            )
 
             if sort_key == "messages":
                 lines.append(
-                    f"{rank} **{name}** • 💬 **{fmt_num(msgs)} berichten**\n"
-                    f"└ <:lvl:1546517601167999127> Level **{level}** • "
-                    f"✨ {fmt_num(total)} XP • 🔊 {fmt_hours(voice)}u"
+                    f"> └ **{fmt_num(messages)} berichten** • "
+                    f"{LEVEL_UP_ICON} Level **{level}** • "
+                    f"{XP_EMOJI} {fmt_num(total)} XP • "
+                    f"{fmt_hours(voice)}u voice"
                 )
             elif sort_key == "voice":
                 lines.append(
-                    f"{rank} **{name}** • 🔊 **{fmt_hours(voice)} uur**\n"
-                    f"└ <:lvl:1546517601167999127> Level **{level}** • "
-                    f"✨ {fmt_num(total)} XP • 💬 {fmt_num(msgs)}"
+                    f"> └ **{fmt_hours(voice)} uur voice** • "
+                    f"{LEVEL_UP_ICON} Level **{level}** • "
+                    f"{XP_EMOJI} {fmt_num(total)} XP • "
+                    f"{fmt_num(messages)} berichten"
                 )
             else:
                 lines.append(
-                    f"{rank} **{name}** • <:lvl:1546517601167999127> Level **{level}**\n"
-                    f"└ ✨ **{fmt_num(total)} XP** • 💬 {fmt_num(msgs)} • 🔊 {fmt_hours(voice)}u"
+                    f"> └ {LEVEL_UP_ICON} Level **{level}** • "
+                    f"{XP_EMOJI} **{fmt_num(total)} XP** • "
+                    f"{fmt_num(messages)} berichten • "
+                    f"{fmt_hours(voice)}u voice"
                 )
 
         if not rows:
-            lines.append("Er zijn nog geen levelgegevens beschikbaar.")
+            lines.append(
+                "> └ Er zijn nog geen levelgegevens beschikbaar."
+            )
 
-        embed = discord.Embed(
-            description=f"# {LEADERBOARD_BADGE}\n\n> " + "\n> ".join(lines),
-            color=BRAND_COLOR,
-        )
-        embed.set_footer(text=f"Pagina {page + 1}/{pages} • {len(rows)} spelers")
-        return embed, pages
+        return "\n".join(lines), pages, page
 
     async def page_for_user(self, guild_id, user_id, sort_key):
         rows = await self.leaderboard_rows(guild_id, sort_key)
@@ -1345,7 +3353,13 @@ class Levels(commands.Cog):
         data = self.load_import_json()
         matched, unmatched, duplicates = [], [], []
         for row in data:
-            username = str(row.get("username", "")).strip().lower()
+            username = str(
+                row.get("username", "")
+            ).strip().lower()
+            username = IMPORT_USERNAME_ALIASES.get(
+                username,
+                username,
+            )
             candidates = []
             for member in guild.members:
                 if member.bot:
@@ -1384,25 +3398,49 @@ class Levels(commands.Cog):
             await db.commit()
         return f"✅ **ACTIVITYRANK IMPORT VOLTOOID**\n\nGeïmporteerd: **{len(matched)}** leden\nOvergeslagen: **{len(unmatched)}**\nOnduidelijk: **{len(duplicates)}**\n\nHistorische XP is opgeslagen in `levels.db`."
 
+
+
+    # ========================================================
+    # PUBLIC COMMANDS
+    # ========================================================
+
     async def send_profile(
         self,
         interaction: discord.Interaction,
         member: Optional[discord.Member] = None,
+        *,
+        xp_profile: bool = False,
     ):
         if interaction.guild is None:
-            return
-
-        target = member or interaction.user
-        if not isinstance(target, discord.Member) or target.bot:
-            await interaction.response.send_message(
-                "❌ Bots nemen niet deel aan het levelsysteem.",
-                ephemeral=True,
+            await self.send_feedback(
+                interaction,
+                "Dit command werkt alleen in een server.",
+                kind="error",
             )
             return
 
-        embed = await self.render_profile(target)
+        target = member or interaction.user
+
+        if (
+            not isinstance(target, discord.Member)
+            or target.bot
+        ):
+            await self.send_feedback(
+                interaction,
+                "Bots nemen niet deel aan het levelsysteem.",
+                kind="error",
+            )
+            return
+
+        view = await self.render_profile(
+            target,
+            banner=XP_BADGE if xp_profile else LEVEL_BADGE,
+            header_icon=LEVEL_UP_ICON,
+            show_avatar=xp_profile,
+        )
+
         await interaction.response.send_message(
-            embed=embed,
+            view=view,
             allowed_mentions=discord.AllowedMentions.none(),
         )
 
@@ -1415,97 +3453,244 @@ class Levels(commands.Cog):
         interaction: discord.Interaction,
         member: Optional[discord.Member] = None,
     ):
-        await self.send_profile(interaction, member)
+        await self.send_profile(
+            interaction,
+            member,
+        )
 
     @app_commands.command(
         name="xp",
-        description="Bekijk je XP, level en activiteit.",
+        description="Bekijk snel je huidige XP en level.",
     )
     async def xp_cmd(
         self,
         interaction: discord.Interaction,
         member: Optional[discord.Member] = None,
     ):
-        await self.send_profile(interaction, member)
-
-    @app_commands.command(name="top", description="Bekijk het LEVENLOOS leaderboard.")
-    async def top_cmd(self, interaction: discord.Interaction):
-        if not interaction.guild:
-            return
-        embed, _ = await self.render_leaderboard(interaction.guild.id)
-        await interaction.response.send_message(
-            embed=embed,
-            view=LeaderboardView(self, interaction.guild.id, interaction.user.id),
-            allowed_mentions=discord.AllowedMentions.none(),
+        await self.send_profile(
+            interaction,
+            member,
+            xp_profile=True,
         )
 
-    @app_commands.command(name="leaderboard", description="Bekijk het LEVENLOOS leaderboard.")
-    async def leaderboard_cmd(self, interaction: discord.Interaction):
-        if not interaction.guild:
-            return
-        embed, _ = await self.render_leaderboard(interaction.guild.id)
-        await interaction.response.send_message(
-            embed=embed,
-            view=LeaderboardView(self, interaction.guild.id, interaction.user.id),
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-
-    @levels.command(name="config", description="Open het levels configuratiepaneel.")
-    async def levels_config(self, interaction: discord.Interaction):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not is_admin(interaction.user):
-            await interaction.response.send_message("❌ Je hebt geen toestemming om het levelsysteem te beheren.", ephemeral=True)
-            return
-        await interaction.response.send_message(self.config_home_text(), view=ConfigView(self, interaction.user.id, interaction.guild.id), ephemeral=True)
-
-    @levels.command(name="status", description="Bekijk de status van het levelsysteem.")
-    async def levels_status(self, interaction: discord.Interaction):
-        if not interaction.guild:
-            return
-        await interaction.response.send_message(await self.render_status(interaction.guild.id), ephemeral=True)
-
-    @levels.command(name="herbereken-xp", description="Herbereken alle XP uit berichten en voice-tijd.")
-    @app_commands.describe(
-        bevestigen="Moet True zijn om de herberekening uit te voeren.",
+    @app_commands.command(
+        name="top",
+        description="Bekijk het LEVENLOOS leaderboard.",
     )
-    async def recalculate_xp(self, interaction: discord.Interaction, bevestigen: bool = False):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not is_admin(interaction.user):
-            await interaction.response.send_message("❌ Je hebt geen toestemming om dit te doen.", ephemeral=True)
-            return
-
-        guild = interaction.guild
-        text_rate = await self.get_int(guild.id, "xp_text")
-        voice_rate = await self.get_int(guild.id, "xp_voice_per_minute")
-        text_enabled = await self.get_bool(guild.id, "xp_text_enabled")
-        voice_enabled = await self.get_bool(guild.id, "xp_voice_enabled")
-
-        if not bevestigen:
-            await interaction.response.send_message(
-                "⚠️ **XP HERBEREKENEN**\n\n"
-                "Dit vervangt de huidige `total_xp` van alle leden door een nieuwe berekening op basis van de opgeslagen activiteit:\n\n"
-                f"💬 berichten × **{text_rate} XP** {'✅' if text_enabled else '❌ uitgeschakeld'}\n"
-                f"🔊 volledige voice-minuten × **{voice_rate} XP** {'✅' if voice_enabled else '❌ uitgeschakeld'}\n\n"
-                "Andere XP-bronnen zoals waves, invites, reactions, suggesties, verjaardagen en handmatige XP tellen daarna **niet** meer mee in `total_xp`. "
-                "De opgeslagen aantallen berichten en voice-tijd blijven gewoon behouden.\n\n"
-                "Voer `/levels herbereken-xp bevestigen:True` uit om door te gaan.",
-                ephemeral=True,
+    async def top_cmd(
+        self,
+        interaction: discord.Interaction,
+    ):
+        if not interaction.guild:
+            await self.send_feedback(
+                interaction,
+                "Dit command werkt alleen in een server.",
+                kind="error",
             )
             return
 
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        view = await LeaderboardView.create(
+            self,
+            interaction.guild.id,
+            interaction.user.id,
+        )
 
-        # Neem lopende voice-sessies eerst mee tot op dit moment.
-        await self.refresh_all_voice(guild.id)
+        await interaction.response.send_message(
+            view=view,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    # ========================================================
+    # ADMIN COMMANDS
+    # ========================================================
+
+    @levels.command(
+        name="config",
+        description="Open het levels configuratiepaneel.",
+    )
+    async def levels_config(
+        self,
+        interaction: discord.Interaction,
+    ):
+        if (
+            not interaction.guild
+            or not isinstance(
+                interaction.user,
+                discord.Member,
+            )
+            or not is_admin(interaction.user)
+        ):
+            await self.send_feedback(
+                interaction,
+                "Je hebt geen toestemming om het levelsysteem te beheren.",
+                kind="error",
+            )
+            return
+
+        await interaction.response.send_message(
+            view=await ConfigView.create(
+                self,
+                interaction.user.id,
+                interaction.guild.id,
+            ),
+            ephemeral=True,
+        )
+
+    @levels.command(
+        name="status",
+        description="Bekijk de status van het levelsysteem.",
+    )
+    async def levels_status(
+        self,
+        interaction: discord.Interaction,
+    ):
+        if not interaction.guild:
+            await self.send_feedback(
+                interaction,
+                "Dit command werkt alleen in een server.",
+                kind="error",
+            )
+            return
+
+        await interaction.response.send_message(
+            view=SimplePanelView(
+                "Levels Status",
+                await self.render_status(
+                    interaction.guild.id
+                ),
+                icon=LEVEL_UP_ICON,
+            ),
+            ephemeral=True,
+        )
+
+    @levels.command(
+        name="herbereken-xp",
+        description="Herbereken alle XP uit berichten en voice-tijd.",
+    )
+    @app_commands.describe(
+        bevestigen="Optioneel: direct uitvoeren zonder bevestigingsknop.",
+    )
+    async def recalculate_xp(
+        self,
+        interaction: discord.Interaction,
+        bevestigen: bool = False,
+    ):
+        if (
+            not interaction.guild
+            or not isinstance(
+                interaction.user,
+                discord.Member,
+            )
+            or not is_admin(interaction.user)
+        ):
+            await self.send_feedback(
+                interaction,
+                "Je hebt geen toestemming om dit te doen.",
+                kind="error",
+            )
+            return
+
+        guild = interaction.guild
+
+        if bevestigen:
+            await interaction.response.defer(
+                ephemeral=True,
+                thinking=True,
+            )
+            await self.perform_recalculate(
+                interaction
+            )
+            return
+
+        text_rate = await self.get_int(
+            guild.id,
+            "xp_text",
+        )
+        voice_rate = await self.get_int(
+            guild.id,
+            "xp_voice_per_minute",
+        )
+        text_enabled = await self.get_bool(
+            guild.id,
+            "xp_text_enabled",
+        )
+        voice_enabled = await self.get_bool(
+            guild.id,
+            "xp_voice_enabled",
+        )
+
+        await interaction.response.send_message(
+            view=RecalculateConfirmView(
+                self,
+                interaction.user.id,
+                guild.id,
+                text_rate,
+                voice_rate,
+                text_enabled,
+                voice_enabled,
+            ),
+            ephemeral=True,
+        )
+
+    async def perform_recalculate(
+        self,
+        interaction: discord.Interaction,
+    ):
+        guild = interaction.guild
+
+        if guild is None:
+            return
+
+        text_rate = await self.get_int(
+            guild.id,
+            "xp_text",
+        )
+        voice_rate = await self.get_int(
+            guild.id,
+            "xp_voice_per_minute",
+        )
+        text_enabled = await self.get_bool(
+            guild.id,
+            "xp_text_enabled",
+        )
+        voice_enabled = await self.get_bool(
+            guild.id,
+            "xp_voice_enabled",
+        )
+
+        await self.refresh_all_voice(
+            guild.id
+        )
 
         now = int(time.time())
-        members = [member for member in guild.members if not member.bot]
-        member_ids = {member.id for member in members}
+        members = [
+            member
+            for member in guild.members
+            if not member.bot
+        ]
+        member_ids = {
+            member.id
+            for member in members
+        }
 
-        # Zorg dat ieder huidig niet-bot lid minimaal een levels_users-rij heeft.
         async with aiosqlite.connect(DATABASE_PATH) as db:
             for member in members:
                 await db.execute(
-                    "INSERT OR IGNORE INTO levels_users (guild_id,user_id,created_at,updated_at) VALUES (?,?,?,?)",
-                    (guild.id, member.id, now, now),
+                    """
+                    INSERT OR IGNORE INTO levels_users (
+                        guild_id,
+                        user_id,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        guild.id,
+                        member.id,
+                        now,
+                        now,
+                    ),
                 )
             await db.commit()
 
@@ -1515,112 +3700,346 @@ class Levels(commands.Cog):
         role_changes = 0
 
         async with aiosqlite.connect(DATABASE_PATH) as db:
-            cur = await db.execute(
-                "SELECT user_id,total_xp,text_messages,voice_seconds FROM levels_users WHERE guild_id=?",
+            cursor = await db.execute(
+                """
+                SELECT
+                    user_id,
+                    total_xp,
+                    text_messages,
+                    voice_seconds
+                FROM levels_users
+                WHERE guild_id = ?
+                """,
                 (guild.id,),
             )
-            rows = await cur.fetchall()
+            rows = await cursor.fetchall()
 
-            for user_id, old_xp, messages, voice_seconds in rows:
-                # Oude/vertrokken gebruikers blijven in de database staan, maar worden
-                # alleen herberekend wanneer ze nog lid van deze server zijn.
+            for (
+                user_id,
+                old_xp,
+                messages,
+                voice_seconds,
+            ) in rows:
                 if user_id not in member_ids:
                     continue
 
-                message_xp = int(messages) * text_rate if text_enabled else 0
-                voice_xp = (int(voice_seconds) // 60) * voice_rate if voice_enabled else 0
-                new_xp = max(0, message_xp + voice_xp)
+                message_xp = (
+                    int(messages) * text_rate
+                    if text_enabled
+                    else 0
+                )
+                voice_xp = (
+                    (int(voice_seconds) // 60)
+                    * voice_rate
+                    if voice_enabled
+                    else 0
+                )
+                new_xp = max(
+                    0,
+                    message_xp + voice_xp,
+                )
 
                 total_before += int(old_xp)
                 total_after += new_xp
+
                 if new_xp != int(old_xp):
                     changed += 1
 
                 await db.execute(
-                    "UPDATE levels_users SET total_xp=?,updated_at=? WHERE guild_id=? AND user_id=?",
-                    (new_xp, now, guild.id, user_id),
+                    """
+                    UPDATE levels_users
+                    SET
+                        total_xp = ?,
+                        updated_at = ?
+                    WHERE guild_id = ?
+                      AND user_id = ?
+                    """,
+                    (
+                        new_xp,
+                        now,
+                        guild.id,
+                        user_id,
+                    ),
                 )
 
             await db.commit()
 
-        # Synchroniseer bestaande levelrollen stilletjes met de nieuwe levels.
-        if await self.get_bool(guild.id, "level_roles_enabled"):
+        if await self.get_bool(
+            guild.id,
+            "level_roles_enabled",
+        ):
             for member in members:
-                role_changes += await self.apply_level_roles(member)
+                role_changes += await self.apply_level_roles(
+                    member
+                )
 
-        await interaction.followup.send(
-            "✅ **XP HERBEREKEND**\n\n"
-            f"Leden verwerkt: **{len(members)}**\n"
-            f"XP gewijzigd bij: **{changed}** leden\n"
-            f"Totaal vóór: **{fmt_num(total_before)} XP**\n"
-            f"Totaal na: **{fmt_num(total_after)} XP**\n\n"
-            f"💬 Formule: berichten × **{text_rate} XP**\n"
-            f"🔊 Formule: volledige voice-minuten × **{voice_rate} XP**\n"
-            f"🏅 Levelrol-wijzigingen: **{role_changes}**",
-            ephemeral=True,
+        await self.send_feedback(
+            interaction,
+            (
+                f"Leden verwerkt: **{len(members)}**\n"
+                f"XP gewijzigd bij: **{changed}** leden\n"
+                f"Totaal vóór: **{fmt_num(total_before)} XP**\n"
+                f"Totaal na: **{fmt_num(total_after)} XP**\n"
+                f"Berichten × **{text_rate} XP**\n"
+                f"Voice-minuten × **{voice_rate} XP**\n"
+                f"Levelrol-wijzigingen: **{role_changes}**"
+            ),
+            kind="success",
+            title="XP herberekend",
         )
 
-    @levels.command(name="import-preview", description="Controleer de ActivityRank import zonder iets te wijzigen.")
-    async def import_preview(self, interaction: discord.Interaction):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not is_admin(interaction.user):
-            await interaction.response.send_message("❌ Je hebt geen toestemming om dit te doen.", ephemeral=True)
+    @levels.command(
+        name="import-preview",
+        description="Controleer de ActivityRank import zonder iets te wijzigen.",
+    )
+    async def import_preview(
+        self,
+        interaction: discord.Interaction,
+    ):
+        if (
+            not interaction.guild
+            or not isinstance(
+                interaction.user,
+                discord.Member,
+            )
+            or not is_admin(interaction.user)
+        ):
+            await self.send_feedback(
+                interaction,
+                "Je hebt geen toestemming om dit te doen.",
+                kind="error",
+            )
             return
+
         try:
-            matched, unmatched, duplicates = self.match_import(interaction.guild)
+            (
+                matched,
+                unmatched,
+                duplicates,
+            ) = self.match_import(
+                interaction.guild
+            )
         except FileNotFoundError:
-            await interaction.response.send_message("❌ `activityrank_import.json` staat niet in de botmap.", ephemeral=True)
+            await self.send_feedback(
+                interaction,
+                "`activityrank_import.json` staat niet in de botmap.",
+                kind="error",
+            )
             return
-        view = ImportPreviewView(
-            self, interaction.user.id, interaction.guild.id, matched, unmatched, duplicates
-        )
+
         await interaction.response.send_message(
-            view.render(),
-            view=view,
+            view=ImportPreviewView(
+                self,
+                interaction.user.id,
+                interaction.guild.id,
+                matched,
+                unmatched,
+                duplicates,
+            ),
             ephemeral=True,
         )
 
-    @levels.command(name="import", description="Importeer de ActivityRank historie naar levels.db.")
-    async def import_cmd(self, interaction: discord.Interaction):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not is_admin(interaction.user):
-            await interaction.response.send_message("❌ Je hebt geen toestemming om dit te doen.", ephemeral=True)
+    @levels.command(
+        name="import",
+        description="Importeer de ActivityRank historie naar levels.db.",
+    )
+    async def import_cmd(
+        self,
+        interaction: discord.Interaction,
+    ):
+        if (
+            not interaction.guild
+            or not isinstance(
+                interaction.user,
+                discord.Member,
+            )
+            or not is_admin(interaction.user)
+        ):
+            await self.send_feedback(
+                interaction,
+                "Je hebt geen toestemming om dit te doen.",
+                kind="error",
+            )
             return
+
         await interaction.response.send_message(
-            "⚠️ **ACTIVITYRANK IMPORT**\n\nDeze actie importeert historische XP, berichten en voice-tijd naar `levels.db`.\nBestaande ActivityRank XP wordt exact overgenomen en niet opnieuw berekend.",
-            view=ImportConfirmView(self, interaction.user.id, interaction.guild.id), ephemeral=True
+            view=ImportConfirmView(
+                self,
+                interaction.user.id,
+                interaction.guild.id,
+            ),
+            ephemeral=True,
         )
 
-    @levels.command(name="xp", description="Beheer handmatig XP van een gebruiker.")
-    @app_commands.describe(member="Gebruiker", actie="add, remove of set")
-    async def manual_xp(self, interaction: discord.Interaction, member: discord.Member, actie: str):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not is_admin(interaction.user):
-            await interaction.response.send_message("❌ Je hebt geen toestemming om dit te doen.", ephemeral=True)
+    @levels.command(
+        name="xp",
+        description="Beheer handmatig XP van een gebruiker.",
+    )
+    @app_commands.describe(
+        member="Gebruiker",
+        actie="add, remove of set",
+    )
+    async def manual_xp(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        actie: str,
+    ):
+        if (
+            not interaction.guild
+            or not isinstance(
+                interaction.user,
+                discord.Member,
+            )
+            or not is_admin(interaction.user)
+        ):
+            await self.send_feedback(
+                interaction,
+                "Je hebt geen toestemming om dit te doen.",
+                kind="error",
+            )
             return
+
+        if member.bot:
+            await self.send_feedback(
+                interaction,
+                "Bots nemen niet deel aan het levelsysteem.",
+                kind="error",
+            )
+            return
+
         mode = actie.lower().strip()
-        if mode not in {"add", "remove", "set"}:
-            await interaction.response.send_message("❌ Gebruik `add`, `remove` of `set`.", ephemeral=True)
-            return
-        await interaction.response.send_modal(ManualXpModal(self, interaction.guild.id, member.id, mode))
 
-    @levels.command(name="role-set", description="Koppel een Discordrol aan een level.")
-    async def role_set(self, interaction: discord.Interaction, level: app_commands.Range[int, 2, 999], role: discord.Role, keep_previous: bool = False):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not is_admin(interaction.user):
-            await interaction.response.send_message("❌ Je hebt geen toestemming om dit te doen.", ephemeral=True)
+        if mode not in {
+            "add",
+            "remove",
+            "set",
+        }:
+            await self.send_feedback(
+                interaction,
+                "Gebruik `add`, `remove` of `set`.",
+                kind="error",
+            )
             return
+
+        await interaction.response.send_modal(
+            ManualXpModal(
+                self,
+                interaction.guild.id,
+                member.id,
+                mode,
+            )
+        )
+
+    @levels.command(
+        name="role-set",
+        description="Koppel een Discordrol aan een level.",
+    )
+    async def role_set(
+        self,
+        interaction: discord.Interaction,
+        level: app_commands.Range[int, 2, 999],
+        role: discord.Role,
+        keep_previous: bool = False,
+    ):
+        if (
+            not interaction.guild
+            or not isinstance(
+                interaction.user,
+                discord.Member,
+            )
+            or not is_admin(interaction.user)
+        ):
+            await self.send_feedback(
+                interaction,
+                "Je hebt geen toestemming om dit te doen.",
+                kind="error",
+            )
+            return
+
         async with aiosqlite.connect(DATABASE_PATH) as db:
-            await db.execute("INSERT INTO levels_roles (guild_id,level,role_id,keep_previous) VALUES (?,?,?,?) ON CONFLICT(guild_id,level) DO UPDATE SET role_id=excluded.role_id,keep_previous=excluded.keep_previous", (interaction.guild.id, level, role.id, int(keep_previous)))
+            await db.execute(
+                """
+                INSERT INTO levels_roles (
+                    guild_id,
+                    level,
+                    role_id,
+                    keep_previous
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(guild_id, level)
+                DO UPDATE SET
+                    role_id = excluded.role_id,
+                    keep_previous = excluded.keep_previous
+                """,
+                (
+                    interaction.guild.id,
+                    level,
+                    role.id,
+                    int(keep_previous),
+                ),
+            )
             await db.commit()
-        await interaction.response.send_message(f"✅ {role.mention} is ingesteld voor level **{level}**.", ephemeral=True)
 
-    @levels.command(name="role-remove", description="Verwijder een levelrol.")
-    async def role_remove(self, interaction: discord.Interaction, level: int):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member) or not is_admin(interaction.user):
-            await interaction.response.send_message("❌ Je hebt geen toestemming om dit te doen.", ephemeral=True)
+        await self.send_feedback(
+            interaction,
+            f"{role.mention} is ingesteld voor level **{level}**.",
+            kind="success",
+            title="Levelrol ingesteld",
+        )
+
+    @levels.command(
+        name="role-remove",
+        description="Verwijder een levelrol.",
+    )
+    async def role_remove(
+        self,
+        interaction: discord.Interaction,
+        level: int,
+    ):
+        if (
+            not interaction.guild
+            or not isinstance(
+                interaction.user,
+                discord.Member,
+            )
+            or not is_admin(interaction.user)
+        ):
+            await self.send_feedback(
+                interaction,
+                "Je hebt geen toestemming om dit te doen.",
+                kind="error",
+            )
             return
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            await db.execute("DELETE FROM levels_roles WHERE guild_id=? AND level=?", (interaction.guild.id, level))
-            await db.commit()
-        await interaction.response.send_message(f"✅ De levelrol voor level **{level}** is verwijderd.", ephemeral=True)
 
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            cursor = await db.execute(
+                """
+                DELETE FROM levels_roles
+                WHERE guild_id = ?
+                  AND level = ?
+                """,
+                (
+                    interaction.guild.id,
+                    level,
+                ),
+            )
+            await db.commit()
+
+        if cursor.rowcount <= 0:
+            await self.send_feedback(
+                interaction,
+                f"Er is geen levelrol ingesteld voor level **{level}**.",
+                kind="warning",
+            )
+            return
+
+        await self.send_feedback(
+            interaction,
+            f"De levelrol voor level **{level}** is verwijderd.",
+            kind="success",
+            title="Levelrol verwijderd",
+        )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Levels(bot))

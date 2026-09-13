@@ -26,6 +26,8 @@ DATABASE_FILES = {
     "Main": "levenloos.db",
     "Levels": "levels.db",
     "Birthdays": "birthdays.db",
+    "Profiles": "profiles.db",
+    "LFG": "lfg.db",
 }
 
 EXPECTED_MODULES = [
@@ -33,6 +35,7 @@ EXPECTED_MODULES = [
     "games",
     "sorting",
     "stats",
+    "profile",
     "welcome",
     "react",
     "levels",
@@ -45,6 +48,7 @@ EXPECTED_MODULES = [
     "actionlog",
     "birthdays",
     "reminders",
+    "lfg",
 ]
 
 MODULE_LABELS = {
@@ -52,6 +56,7 @@ MODULE_LABELS = {
     "games": "Games",
     "sorting": "Sorting",
     "stats": "Stats",
+    "profile": "Profile / Badges",
     "welcome": "Welcome",
     "react": "React Roles",
     "levels": "Levels",
@@ -64,9 +69,28 @@ MODULE_LABELS = {
     "actionlog": "Action Log",
     "birthdays": "Verjaardagen",
     "reminders": "Reminders",
+    "lfg": "LFG",
 }
 
 PURPLE = discord.Color.from_rgb(108, 39, 218)
+
+SUCCESS_EMOJI = "<:success:1547724072090079313>"
+ERROR_EMOJI = "<:error:1547724070252974131>"
+WARNING_EMOJI = "<:warning:1547724067568746526>"
+INFO_EMOJI = "<:info:1547724036107149413>"
+
+REFRESH_EMOJI = "<:refresh:1547724055426244618>"
+PREVIOUS_EMOJI = "<:previous:1547724049411739748>"
+NEXT_EMOJI = "<:next:1547724052037247106>"
+
+BOT_EMOJI = "<:bot:1547733042150514748>"
+MODULES_EMOJI = "<:modules:1547909513808580658>"
+COMMANDS_EMOJI = "<:berichten:1547737207778058250>"
+USER_EMOJI = "<:user:1547737210986692679>"
+VOICE_EMOJI = "<:voice:1547737205429243924>"
+GAMES_EMOJI = "<:gamesbutton:1547854165097717801>"
+XP_EMOJI = "<:xp:1547737203789144136>"
+SETTINGS_EMOJI = "<:instellingen:1547854198698287165>"
 
 
 # =========================================================
@@ -331,66 +355,72 @@ class BotInfo(commands.Cog):
         latency_ms = round(self.bot.latency * 1000)
         stats = await self.get_stats_data(guild)
 
+        # Discord activity/presence ondersteunt geen gerenderde
+        # server-custom-emoji's zoals <:naam:id>. Unicode emoji's werken wel.
         statuses: list[tuple[discord.ActivityType, str]] = [
             (
                 discord.ActivityType.watching,
-                f"{format_number(humans)} spelers in LEVENLOOS",
+                f"👥 {format_number(humans)} spelers in LEVENLOOS",
             ),
             (
                 discord.ActivityType.playing,
-                f"met {format_number(active_games)} actieve games",
+                f"🎮 met {format_number(active_games)} actieve games",
             ),
             (
                 discord.ActivityType.watching,
-                f"{format_number(archived_games)} gearchiveerde games",
+                f"📦 {format_number(archived_games)} gearchiveerde games",
             ),
             (
                 discord.ActivityType.watching,
-                f"{format_number(boosts)} server boosts 🚀",
+                f"🚀 {format_number(boosts)} server boosts",
             ),
             (
                 discord.ActivityType.watching,
-                f"{format_number(voice_now)} spelers in voice",
+                f"🔊 {format_number(voice_now)} spelers in voice",
             ),
             (
                 discord.ActivityType.playing,
-                "/level",
+                "✨ /level",
             ),
             (
                 discord.ActivityType.playing,
-                "/top",
+                "🏆 /top",
             ),
             (
                 discord.ActivityType.playing,
-                "/react",
+                "🎨 /react",
             ),
             (
                 discord.ActivityType.playing,
-                "/verjaardag",
+                "🎂 /verjaardag",
             ),
             (
                 discord.ActivityType.playing,
-                "/game vote",
+                "🗳️ /game vote",
+            ),
+            (
+                discord.ActivityType.playing,
+                "🔎 /lfg",
             ),
             (
                 discord.ActivityType.watching,
-                f"{format_number(commands_count)} slash commands",
+                f"⌨️ {format_number(commands_count)} slash commands",
             ),
             (
                 discord.ActivityType.watching,
-                f"{loaded_modules}/{len(EXPECTED_MODULES)} modules",
+                f"🧩 {loaded_modules}/{len(EXPECTED_MODULES)} modules",
             ),
             (
                 discord.ActivityType.watching,
-                f"{latency_ms}ms ping",
+                f"⚡ {latency_ms}ms ping",
             ),
             (
                 discord.ActivityType.playing,
-                "LEVENLOOS 🎮",
+                "🎮 LEVENLOOS",
             ),
             (
                 discord.ActivityType.watching,
-                "jouw XP oplopen ✨",
+                "✨ jouw XP oplopen",
             ),
         ]
 
@@ -398,7 +428,7 @@ class BotInfo(commands.Cog):
             statuses.append(
                 (
                     discord.ActivityType.watching,
-                    f"{format_number(stats['week_messages'])} berichten deze week",
+                    f"💬 {format_number(stats['week_messages'])} berichten deze week",
                 )
             )
 
@@ -406,7 +436,7 @@ class BotInfo(commands.Cog):
             statuses.append(
                 (
                     discord.ActivityType.watching,
-                    f"{format_number(stats['active_users'])} actieve leden deze week",
+                    f"🔥 {format_number(stats['active_users'])} actieve leden deze week",
                 )
             )
 
@@ -416,7 +446,7 @@ class BotInfo(commands.Cog):
             statuses.append(
                 (
                     discord.ActivityType.watching,
-                    f"{voice_hours:.0f}u voice deze week",
+                    f"🔊 {voice_hours:.0f}u voice deze week",
                 )
             )
 
@@ -443,23 +473,23 @@ class BotInfo(commands.Cog):
         fallback_statuses = [
             (
                 discord.ActivityType.watching,
-                "nieuwe levels binnenkomen",
+                "⬆️ nieuwe levels binnenkomen",
             ),
             (
                 discord.ActivityType.playing,
-                "met React Roles 🎨",
+                "🎨 met React Roles",
             ),
             (
                 discord.ActivityType.watching,
-                f"{format_number(members)} accounts op de server",
+                f"👤 {format_number(members)} accounts op de server",
             ),
             (
                 discord.ActivityType.listening,
-                "naar LEVENLOOS",
+                "🎧 naar LEVENLOOS",
             ),
             (
                 discord.ActivityType.watching,
-                "game votes 🎮",
+                "🗳️ game votes",
             ),
         ]
 
@@ -525,14 +555,13 @@ class BotInfo(commands.Cog):
         await self.bot.wait_until_ready()
 
     # =====================================================
-    # EMBEDS
+    # COMPONENTS V2 BUILDERS
     # =====================================================
 
-    async def build_info_embed(
+    async def build_info_data(
         self,
         guild: discord.Guild,
-    ) -> discord.Embed:
-
+    ) -> dict:
         ping = round(self.bot.latency * 1000)
         uptime = format_duration(
             self.uptime_seconds()
@@ -543,7 +572,6 @@ class BotInfo(commands.Cog):
             for member in guild.members
             if not member.bot
         )
-
         bots = sum(
             1
             for member in guild.members
@@ -553,11 +581,9 @@ class BotInfo(commands.Cog):
         active_games = self.active_games_count(
             guild
         )
-
         archived_games = self.archived_games_count(
             guild
         )
-
         voice_now = self.voice_now_count(
             guild
         )
@@ -565,7 +591,10 @@ class BotInfo(commands.Cog):
         loaded_modules = [
             module
             for module in EXPECTED_MODULES
-            if extension_loaded(self.bot, module)
+            if extension_loaded(
+                self.bot,
+                module,
+            )
         ]
 
         command_count = len(
@@ -576,95 +605,37 @@ class BotInfo(commands.Cog):
             guild
         )
 
-        embed = discord.Embed(
-            title="🤖 LEVENLOOS BOT",
-            description=(
-                "De officiële bot van **LEVENLOOS**.\n"
-                "Levels, games, React Roles, statistieken, "
-                "verjaardagen en serverbeheer in één bot."
-            ),
-            color=PURPLE,
-            timestamp=datetime.now(timezone.utc),
-        )
-
-        if self.bot.user is not None:
-            embed.set_thumbnail(
-                url=self.bot.user.display_avatar.url
-            )
-
-        embed.add_field(
-            name="⚡ BOT",
-            value=(
-                f"> **Ping:** `{ping} ms`\n"
-                f"> **Uptime:** `{uptime}`\n"
-                f"> **Versie:** `{BOT_VERSION}`\n"
-                f"> **Discord.py:** `{discord.__version__}`\n"
-                f"> **Python:** `{platform.python_version()}`"
-            ),
-            inline=True,
-        )
-
-        embed.add_field(
-            name="👥 SERVER",
-            value=(
-                f"> **Leden:** `{format_number(humans)}`\n"
-                f"> **Bots:** `{format_number(bots)}`\n"
-                f"> **Boosts:** `{format_number(guild.premium_subscription_count or 0)}`\n"
-                f"> **In voice:** `{format_number(voice_now)}`\n"
-                f"> **Rollen:** `{format_number(len(guild.roles))}`"
-            ),
-            inline=True,
-        )
-
-        embed.add_field(
-            name="🎮 GAMES",
-            value=(
-                f"> **Actief:** `{format_number(active_games)}`\n"
-                f"> **Archived:** `{format_number(archived_games)}`\n"
-                f"> **Tekstkanalen:** `{format_number(len(guild.text_channels))}`\n"
-                f"> **Voicekanalen:** `{format_number(len(guild.voice_channels))}`\n"
-                f"> **Categorieën:** `{format_number(len(guild.categories))}`"
-            ),
-            inline=True,
-        )
-
         weekly_lines = []
 
         if stats["week_messages"] is not None:
             weekly_lines.append(
-                f"> **Berichten:** `{format_number(stats['week_messages'])}`"
+                f"> └ Berichten: **{format_number(stats['week_messages'])}**"
             )
 
         if stats["active_users"] is not None:
             weekly_lines.append(
-                f"> **Actieve leden:** `{format_number(stats['active_users'])}`"
+                f"> └ Actieve leden: **{format_number(stats['active_users'])}**"
             )
 
         if stats["voice_seconds"] is not None:
             weekly_lines.append(
-                f"> **Voice:** `{stats['voice_seconds'] / 3600:.1f} uur`"
+                f"> └ Voice: **{stats['voice_seconds'] / 3600:.1f} uur**"
             )
 
         if stats["top_game"] is not None:
             weekly_lines.append(
-                f"> **Top game:** `{shorten(clean_game_channel_name(stats['top_game']), 32)}`"
+                f"> └ Top game: **{shorten(clean_game_channel_name(stats['top_game']), 32)}**"
             )
 
         if stats["top_player"] is not None:
             weekly_lines.append(
-                f"> **Actiefste:** `{shorten(stats['top_player'].display_name, 32)}`"
+                f"> └ Actiefste: **{shorten(stats['top_player'].display_name, 32)}**"
             )
 
         if not weekly_lines:
             weekly_lines.append(
-                "> Stats-module heeft nog geen weekdata."
+                "> └ Stats-module heeft nog geen weekdata."
             )
-
-        embed.add_field(
-            name="📊 DEZE WEEK",
-            value="\n".join(weekly_lines),
-            inline=False,
-        )
 
         database_lines = []
 
@@ -674,34 +645,16 @@ class BotInfo(commands.Cog):
                     size = os.path.getsize(path)
                     size_kb = size / 1024
                     database_lines.append(
-                        f"> 🟢 **{label}:** `{size_kb:.1f} KB`"
+                        f"> └ {SUCCESS_EMOJI} **{label}:** `{size_kb:.1f} KB`"
                     )
                 except OSError:
                     database_lines.append(
-                        f"> 🟡 **{label}:** aanwezig"
+                        f"> └ {WARNING_EMOJI} **{label}:** aanwezig"
                     )
             else:
                 database_lines.append(
-                    f"> ⚫ **{label}:** niet aangemaakt"
+                    f"> └ **{label}:** niet aangemaakt"
                 )
-
-        embed.add_field(
-            name="💾 DATABASES",
-            value="\n".join(database_lines),
-            inline=True,
-        )
-
-        embed.add_field(
-            name="🧩 SYSTEEM",
-            value=(
-                f"> **Modules:** `{len(loaded_modules)}/{len(EXPECTED_MODULES)}`\n"
-                f"> **Commands:** `{format_number(command_count)}`\n"
-                f"> **Servers:** `{format_number(len(self.bot.guilds))}`\n"
-                f"> **OS:** `{platform.system()} {platform.release()}`\n"
-                f"> **Statussen:** `20`"
-            ),
-            inline=True,
-        )
 
         bot_created = (
             discord.utils.format_dt(
@@ -712,25 +665,31 @@ class BotInfo(commands.Cog):
             else "Onbekend"
         )
 
-        embed.add_field(
-            name="ℹ️ APPLICATIE",
-            value=(
-                f"> **Naam:** `{self.bot.user.name if self.bot.user else 'LEVENLOOS'}`\n"
-                f"> **ID:** `{self.bot.user.id if self.bot.user else 'Onbekend'}`\n"
-                f"> **Aangemaakt:** {bot_created}\n"
-                f"> **Statusrotatie:** `{STATUS_ROTATION_MINUTES} min`\n"
-                f"> **Slash commands:** `{command_count}`"
-            ),
-            inline=False,
+        avatar_url = (
+            self.bot.user.display_avatar.url
+            if self.bot.user is not None
+            else None
         )
 
-        embed.set_footer(
-            text="LEVENLOOS • Bot Info"
-        )
+        return {
+            "ping": ping,
+            "uptime": uptime,
+            "humans": humans,
+            "bots": bots,
+            "active_games": active_games,
+            "archived_games": archived_games,
+            "voice_now": voice_now,
+            "loaded_modules": loaded_modules,
+            "command_count": command_count,
+            "weekly_lines": weekly_lines,
+            "database_lines": database_lines,
+            "bot_created": bot_created,
+            "avatar_url": avatar_url,
+        }
 
-        return embed
-
-    def build_modules_embed(self) -> discord.Embed:
+    def build_modules_data(
+        self,
+    ) -> tuple[list[str], list[str]]:
         loaded = []
         unloaded = []
 
@@ -740,50 +699,43 @@ class BotInfo(commands.Cog):
                 module.title(),
             )
 
-            if extension_loaded(self.bot, module):
-                loaded.append(f"🟢 {label}")
+            if extension_loaded(
+                self.bot,
+                module,
+            ):
+                loaded.append(
+                    f"> └ {SUCCESS_EMOJI} {label}"
+                )
             else:
-                unloaded.append(f"⚫ {label}")
+                unloaded.append(
+                    f"> └ {ERROR_EMOJI} {label}"
+                )
 
-        embed = discord.Embed(
-            title="🧩 LEVENLOOS MODULES",
-            color=PURPLE,
-            description=(
-                f"**{len(loaded)}/{len(EXPECTED_MODULES)}** modules geladen."
-            ),
-        )
+        return loaded, unloaded
 
-        embed.add_field(
-            name="Geladen",
-            value="\n".join(loaded) or "Geen",
-            inline=True,
-        )
-
-        embed.add_field(
-            name="Uitgeschakeld",
-            value="\n".join(unloaded) or "Geen",
-            inline=True,
-        )
-
-        return embed
-
-    def build_commands_embed(
+    def build_commands_page(
         self,
         page: int = 0,
-    ) -> tuple[discord.Embed, int, int]:
-
+    ) -> tuple[str, int, int, int]:
         all_commands = self.command_list()
-        per_page = 15
+        per_page = 10
 
         pages = max(
             1,
-            (len(all_commands) + per_page - 1)
+            (
+                len(all_commands)
+                + per_page
+                - 1
+            )
             // per_page,
         )
 
         page = max(
             0,
-            min(page, pages - 1),
+            min(
+                page,
+                pages - 1,
+            ),
         )
 
         start = page * per_page
@@ -794,36 +746,61 @@ class BotInfo(commands.Cog):
 
         lines = []
 
-        for command in all_commands[start:end]:
+        for command in all_commands[
+            start:end
+        ]:
             description = (
                 command.description
                 or "Geen beschrijving"
             )
 
             lines.append(
-                f"> `{command_path(command)}`\n"
-                f"> └ {shorten(description, 80)}"
+                f"### `{command_path(command)}`\n"
+                f"> └ {shorten(description, 95)}"
             )
 
         if not lines:
             lines.append(
-                "> Er zijn momenteel geen slash commands geladen."
+                "> └ Er zijn momenteel geen slash commands geladen."
             )
 
-        embed = discord.Embed(
-            title="⌨️ LEVENLOOS COMMANDS",
-            description="\n\n".join(lines),
-            color=PURPLE,
+        body = (
+            f"# {COMMANDS_EMOJI} Commands\n"
+            "> └ Alle geladen slash commands van LEVENLOOS.\n\n"
+            + "\n\n".join(lines)
         )
 
-        embed.set_footer(
-            text=(
-                f"Pagina {page + 1}/{pages} • "
-                f"{len(all_commands)} commands"
+        return (
+            body,
+            page,
+            pages,
+            len(all_commands),
+        )
+
+    async def send_feedback(
+        self,
+        interaction: discord.Interaction,
+        message: str,
+        *,
+        kind: str = "info",
+        title: str | None = None,
+    ) -> None:
+        view = BotFeedbackView(
+            message,
+            kind=kind,
+            title=title,
+        )
+
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                view=view,
+                ephemeral=True,
             )
-        )
-
-        return embed, page, pages
+        else:
+            await interaction.response.send_message(
+                view=view,
+                ephemeral=True,
+            )
 
     # =====================================================
     # /BOT INFO
@@ -838,24 +815,23 @@ class BotInfo(commands.Cog):
         interaction: discord.Interaction,
     ):
         if interaction.guild is None:
-            await interaction.response.send_message(
-                "❌ Dit command werkt alleen in een server.",
-                ephemeral=True,
+            await self.send_feedback(
+                interaction,
+                "Dit command werkt alleen in een server.",
+                kind="error",
             )
             return
 
         await interaction.response.defer()
 
-        embed = await self.build_info_embed(
-            interaction.guild
+        view = await BotInfoView.create(
+            self,
+            interaction.user.id,
+            interaction.guild,
         )
 
         await interaction.followup.send(
-            embed=embed,
-            view=BotInfoView(
-                self,
-                interaction.user.id,
-            ),
+            view=view,
         )
 
     # =====================================================
@@ -870,17 +846,11 @@ class BotInfo(commands.Cog):
         self,
         interaction: discord.Interaction,
     ):
-        embed, page, pages = self.build_commands_embed(
-            0
-        )
-
         await interaction.response.send_message(
-            embed=embed,
             view=CommandPagesView(
                 self,
                 interaction.user.id,
-                page,
-                pages,
+                0,
             ),
             ephemeral=True,
         )
@@ -898,7 +868,10 @@ class BotInfo(commands.Cog):
         interaction: discord.Interaction,
     ):
         await interaction.response.send_message(
-            embed=self.build_modules_embed(),
+            view=ModulesView(
+                self,
+                interaction.user.id,
+            ),
             ephemeral=True,
         )
 
@@ -914,18 +887,28 @@ class BotInfo(commands.Cog):
         self,
         interaction: discord.Interaction,
     ):
-        if interaction.guild is None:
+        if (
+            interaction.guild is None
+            or not isinstance(
+                interaction.user,
+                discord.Member,
+            )
+        ):
+            await self.send_feedback(
+                interaction,
+                "Dit command werkt alleen in een server.",
+                kind="error",
+            )
             return
 
-        member = interaction.user
-
-        if (
-            not isinstance(member, discord.Member)
-            or not management_access(member)
+        if not management_access(
+            interaction.user
         ):
-            await interaction.response.send_message(
-                "❌ Je hebt geen toegang tot dit command.",
-                ephemeral=True,
+            await self.send_feedback(
+                interaction,
+                "Je hebt geen toegang tot dit command.",
+                kind="error",
+                title="Geen toegang",
             )
             return
 
@@ -935,18 +918,364 @@ class BotInfo(commands.Cog):
 
         await self.rotate_status()
 
-        await interaction.followup.send(
-            "✅ Botstatus doorgedraaid naar de volgende status.",
-            ephemeral=True,
+        await self.send_feedback(
+            interaction,
+            "Botstatus doorgedraaid naar de volgende status.",
+            kind="success",
+            title="Status vernieuwd",
         )
 
 
 # =========================================================
-# INFO VIEW
+# COMPONENTS V2
 # =========================================================
 
-class BotInfoView(discord.ui.View):
+class BotFeedbackView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: str = "info",
+        title: str | None = None,
+    ):
+        super().__init__(
+            timeout=180
+        )
 
+        if kind == "success":
+            icon = SUCCESS_EMOJI
+            accent = discord.Colour.from_rgb(
+                87,
+                242,
+                135,
+            )
+            default_title = "Gelukt"
+        elif kind == "error":
+            icon = ERROR_EMOJI
+            accent = discord.Colour.from_rgb(
+                237,
+                66,
+                69,
+            )
+            default_title = "Fout"
+        elif kind == "warning":
+            icon = WARNING_EMOJI
+            accent = discord.Colour.from_rgb(
+                254,
+                231,
+                92,
+            )
+            default_title = "Let op"
+        else:
+            icon = INFO_EMOJI
+            accent = PURPLE
+            default_title = "Informatie"
+
+        lines = [
+            f"> └ {line}"
+            for line in message.splitlines()
+            if line.strip()
+        ]
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    f"# {icon} {title or default_title}\n"
+                    + "\n".join(lines)
+                ),
+                accent_colour=accent,
+            )
+        )
+
+
+class BotInfoButton(discord.ui.Button):
+    def __init__(
+        self,
+        owner_view: "BotInfoView",
+        action: str,
+        label: str,
+        *,
+        emoji: str | None = None,
+        style: discord.ButtonStyle = discord.ButtonStyle.secondary,
+    ):
+        super().__init__(
+            label=label,
+            emoji=emoji,
+            style=style,
+        )
+        self.owner_view = owner_view
+        self.action = action
+
+    async def callback(
+        self,
+        interaction: discord.Interaction,
+    ) -> None:
+        await self.owner_view.handle(
+            interaction,
+            self.action,
+        )
+
+
+class BotInfoView(discord.ui.LayoutView):
+    def __init__(
+        self,
+        cog: BotInfo,
+        owner_id: int,
+        guild_id: int,
+        data: dict,
+    ):
+        super().__init__(
+            timeout=900
+        )
+        self.cog = cog
+        self.owner_id = owner_id
+        self.guild_id = guild_id
+
+        header_text = (
+            f"# {BOT_EMOJI} LEVENLOOS Bot\n"
+            "> └ De officiële bot van **LEVENLOOS**.\n"
+            "-# Levels, games, LFG, React Roles, statistieken, "
+            "verjaardagen en serverbeheer in één bot."
+        )
+
+        if data["avatar_url"]:
+            header = discord.ui.Section(
+                discord.ui.TextDisplay(
+                    header_text
+                ),
+                accessory=discord.ui.Thumbnail(
+                    data["avatar_url"],
+                    description="LEVENLOOS bot",
+                ),
+            )
+        else:
+            header = discord.ui.TextDisplay(
+                header_text
+            )
+
+        body = [
+            header,
+            discord.ui.Separator(
+                visible=True,
+                spacing=discord.SeparatorSpacing.small,
+            ),
+            discord.ui.TextDisplay(
+                f"## {BOT_EMOJI} Bot\n"
+                f"> └ Ping: **{data['ping']} ms**\n"
+                f"> └ Uptime: **{data['uptime']}**\n"
+                f"> └ Versie: **{BOT_VERSION}**\n"
+                f"> └ Discord.py: **{discord.__version__}**\n"
+                f"> └ Python: **{platform.python_version()}**"
+            ),
+            discord.ui.TextDisplay(
+                f"## {USER_EMOJI} Server\n"
+                f"> └ Leden: **{format_number(data['humans'])}**\n"
+                f"> └ Bots: **{format_number(data['bots'])}**\n"
+                f"> └ Boosts: **{format_number(self._guild_boosts())}**\n"
+                f"> └ In voice: **{format_number(data['voice_now'])}**\n"
+                f"> └ Rollen: **{format_number(self._guild_roles())}**"
+            ),
+            discord.ui.TextDisplay(
+                f"## {GAMES_EMOJI} Games\n"
+                f"> └ Actief: **{format_number(data['active_games'])}**\n"
+                f"> └ Gearchiveerd: **{format_number(data['archived_games'])}**\n"
+                f"> └ Tekstkanalen: **{format_number(self._text_channels())}**\n"
+                f"> └ Voicekanalen: **{format_number(self._voice_channels())}**\n"
+                f"> └ Categorieën: **{format_number(self._categories())}**"
+            ),
+            discord.ui.Separator(
+                visible=True,
+                spacing=discord.SeparatorSpacing.small,
+            ),
+            discord.ui.TextDisplay(
+                f"## {XP_EMOJI} Deze week\n"
+                + "\n".join(
+                    data["weekly_lines"]
+                )
+            ),
+            discord.ui.Separator(
+                visible=True,
+                spacing=discord.SeparatorSpacing.small,
+            ),
+            discord.ui.TextDisplay(
+                f"## {SETTINGS_EMOJI} Systeem\n"
+                f"> └ Modules: **{len(data['loaded_modules'])}/{len(EXPECTED_MODULES)}**\n"
+                f"> └ Commands: **{format_number(data['command_count'])}**\n"
+                f"> └ Servers: **{format_number(len(cog.bot.guilds))}**\n"
+                f"> └ OS: **{platform.system()} {platform.release()}**\n"
+                f"> └ Statusrotatie: **{STATUS_ROTATION_MINUTES} min**"
+            ),
+            discord.ui.TextDisplay(
+                f"## {INFO_EMOJI} Applicatie\n"
+                f"> └ Naam: **{cog.bot.user.name if cog.bot.user else 'LEVENLOOS'}**\n"
+                f"> └ ID: `{cog.bot.user.id if cog.bot.user else 'Onbekend'}`\n"
+                f"> └ Aangemaakt: {data['bot_created']}"
+            ),
+            discord.ui.TextDisplay(
+                "## Databases\n"
+                + "\n".join(
+                    data["database_lines"]
+                )
+            ),
+            discord.ui.Separator(
+                visible=True,
+                spacing=discord.SeparatorSpacing.small,
+            ),
+            discord.ui.ActionRow(
+                BotInfoButton(
+                    self,
+                    "refresh",
+                    "Vernieuwen",
+                    emoji=REFRESH_EMOJI,
+                    style=discord.ButtonStyle.primary,
+                ),
+                BotInfoButton(
+                    self,
+                    "commands",
+                    "Commands",
+                    emoji=COMMANDS_EMOJI,
+                ),
+                BotInfoButton(
+                    self,
+                    "modules",
+                    "Modules",
+                    emoji=MODULES_EMOJI,
+                ),
+            ),
+            discord.ui.TextDisplay(
+                "-# LEVENLOOS • Bot Info"
+            ),
+        ]
+
+        self.add_item(
+            discord.ui.Container(
+                *body,
+                accent_colour=PURPLE,
+            )
+        )
+
+    @classmethod
+    async def create(
+        cls,
+        cog: BotInfo,
+        owner_id: int,
+        guild: discord.Guild,
+    ) -> "BotInfoView":
+        data = await cog.build_info_data(
+            guild
+        )
+        view = cls(
+            cog,
+            owner_id,
+            guild.id,
+            data,
+        )
+        view._guild = guild
+        return view
+
+    def _guild_obj(
+        self,
+    ) -> discord.Guild | None:
+        guild = getattr(
+            self,
+            "_guild",
+            None,
+        )
+        if guild is not None:
+            return guild
+
+        return self.cog.bot.get_guild(
+            self.guild_id
+        )
+
+    def _guild_boosts(self) -> int:
+        guild = self._guild_obj()
+        return (
+            guild.premium_subscription_count or 0
+            if guild is not None
+            else 0
+        )
+
+    def _guild_roles(self) -> int:
+        guild = self._guild_obj()
+        return len(guild.roles) if guild else 0
+
+    def _text_channels(self) -> int:
+        guild = self._guild_obj()
+        return len(guild.text_channels) if guild else 0
+
+    def _voice_channels(self) -> int:
+        guild = self._guild_obj()
+        return len(guild.voice_channels) if guild else 0
+
+    def _categories(self) -> int:
+        guild = self._guild_obj()
+        return len(guild.categories) if guild else 0
+
+    async def interaction_check(
+        self,
+        interaction: discord.Interaction,
+    ) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+
+        await self.cog.send_feedback(
+            interaction,
+            "Dit menu hoort bij iemand anders.",
+            kind="error",
+            title="Geen toegang",
+        )
+        return False
+
+    async def handle(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+    ) -> None:
+        if action == "refresh":
+            guild = interaction.guild
+
+            if guild is None:
+                await self.cog.send_feedback(
+                    interaction,
+                    "De server kon niet worden gevonden.",
+                    kind="error",
+                )
+                return
+
+            await interaction.response.edit_message(
+                content=None,
+                embed=None,
+                view=await BotInfoView.create(
+                    self.cog,
+                    self.owner_id,
+                    guild,
+                ),
+            )
+            return
+
+        if action == "commands":
+            await interaction.response.send_message(
+                view=CommandPagesView(
+                    self.cog,
+                    self.owner_id,
+                    0,
+                ),
+                ephemeral=True,
+            )
+            return
+
+        if action == "modules":
+            await interaction.response.send_message(
+                view=ModulesView(
+                    self.cog,
+                    self.owner_id,
+                ),
+                ephemeral=True,
+            )
+
+
+class ModulesView(discord.ui.LayoutView):
     def __init__(
         self,
         cog: BotInfo,
@@ -955,204 +1284,205 @@ class BotInfoView(discord.ui.View):
         super().__init__(
             timeout=900
         )
-
         self.cog = cog
         self.owner_id = owner_id
+
+        loaded, unloaded = (
+            cog.build_modules_data()
+        )
+
+        loaded_text = (
+            "\n".join(loaded)
+            if loaded
+            else "> └ Geen"
+        )
+        unloaded_text = (
+            "\n".join(unloaded)
+            if unloaded
+            else "> └ Geen"
+        )
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    f"# {MODULES_EMOJI} Modules\n"
+                    f"> └ **{len(loaded)}/{len(EXPECTED_MODULES)}** modules geladen."
+                ),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.TextDisplay(
+                    f"## {SUCCESS_EMOJI} Geladen\n"
+                    f"{loaded_text}"
+                ),
+                discord.ui.TextDisplay(
+                    f"## {ERROR_EMOJI} Uitgeschakeld\n"
+                    f"{unloaded_text}"
+                ),
+                discord.ui.TextDisplay(
+                    "-# LEVENLOOS • Modules"
+                ),
+                accent_colour=PURPLE,
+            )
+        )
 
     async def interaction_check(
         self,
         interaction: discord.Interaction,
     ) -> bool:
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message(
-                "❌ Dit menu hoort bij iemand anders.",
-                ephemeral=True,
-            )
-            return False
+        if interaction.user.id == self.owner_id:
+            return True
 
-        return True
+        await self.cog.send_feedback(
+            interaction,
+            "Dit menu hoort bij iemand anders.",
+            kind="error",
+            title="Geen toegang",
+        )
+        return False
 
-    @discord.ui.button(
-        label="Vernieuwen",
-        emoji="🔄",
-        style=discord.ButtonStyle.primary,
-    )
-    async def refresh_button(
+
+class CommandPageButton(discord.ui.Button):
+    def __init__(
+        self,
+        owner_view: "CommandPagesView",
+        action: str,
+        label: str,
+        *,
+        emoji: str | None = None,
+        style: discord.ButtonStyle = discord.ButtonStyle.secondary,
+        disabled: bool = False,
+    ):
+        super().__init__(
+            label=label,
+            emoji=emoji,
+            style=style,
+            disabled=disabled,
+        )
+        self.owner_view = owner_view
+        self.action = action
+
+    async def callback(
         self,
         interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ):
-        if interaction.guild is None:
-            return
-
-        embed = await self.cog.build_info_embed(
-            interaction.guild
-        )
-
-        await interaction.response.edit_message(
-            embed=embed,
-            view=self,
-        )
-
-    @discord.ui.button(
-        label="Commands",
-        emoji="⌨️",
-        style=discord.ButtonStyle.secondary,
-    )
-    async def commands_button(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ):
-        embed, page, pages = (
-            self.cog.build_commands_embed(0)
-        )
-
-        await interaction.response.send_message(
-            embed=embed,
-            view=CommandPagesView(
-                self.cog,
-                interaction.user.id,
-                page,
-                pages,
-            ),
-            ephemeral=True,
-        )
-
-    @discord.ui.button(
-        label="Modules",
-        emoji="🧩",
-        style=discord.ButtonStyle.secondary,
-    )
-    async def modules_button(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ):
-        await interaction.response.send_message(
-            embed=self.cog.build_modules_embed(),
-            ephemeral=True,
+    ) -> None:
+        await self.owner_view.handle(
+            interaction,
+            self.action,
         )
 
 
-# =========================================================
-# COMMAND PAGINATION
-# =========================================================
-
-class CommandPagesView(discord.ui.View):
-
+class CommandPagesView(discord.ui.LayoutView):
     def __init__(
         self,
         cog: BotInfo,
         owner_id: int,
         page: int,
-        pages: int,
     ):
         super().__init__(
             timeout=900
         )
-
         self.cog = cog
         self.owner_id = owner_id
+
+        (
+            body,
+            page,
+            pages,
+            total_commands,
+        ) = cog.build_commands_page(
+            page
+        )
+
         self.page = page
         self.pages = pages
 
-        self.update_buttons()
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(
+                    body
+                ),
+                discord.ui.Separator(
+                    visible=True,
+                    spacing=discord.SeparatorSpacing.small,
+                ),
+                discord.ui.ActionRow(
+                    CommandPageButton(
+                        self,
+                        "previous",
+                        "Vorige",
+                        emoji=PREVIOUS_EMOJI,
+                        style=discord.ButtonStyle.primary,
+                        disabled=page <= 0,
+                    ),
+                    CommandPageButton(
+                        self,
+                        "page",
+                        f"{page + 1}/{pages}",
+                        disabled=True,
+                    ),
+                    CommandPageButton(
+                        self,
+                        "next",
+                        "Volgende",
+                        emoji=NEXT_EMOJI,
+                        style=discord.ButtonStyle.primary,
+                        disabled=page >= pages - 1,
+                    ),
+                ),
+                discord.ui.TextDisplay(
+                    f"-# {total_commands} commands • Pagina {page + 1}/{pages}"
+                ),
+                accent_colour=PURPLE,
+            )
+        )
 
     async def interaction_check(
         self,
         interaction: discord.Interaction,
     ) -> bool:
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message(
-                "❌ Dit menu hoort bij iemand anders.",
-                ephemeral=True,
-            )
-            return False
+        if interaction.user.id == self.owner_id:
+            return True
 
-        return True
-
-    def update_buttons(self):
-        self.previous_button.disabled = (
-            self.page <= 0
+        await self.cog.send_feedback(
+            interaction,
+            "Dit menu hoort bij iemand anders.",
+            kind="error",
+            title="Geen toegang",
         )
+        return False
 
-        self.next_button.disabled = (
-            self.page >= self.pages - 1
-        )
-
-        self.page_button.label = (
-            f"{self.page + 1}/{self.pages}"
-        )
-
-    @discord.ui.button(
-        label="Vorige",
-        emoji="◀️",
-        style=discord.ButtonStyle.primary,
-    )
-    async def previous_button(
+    async def handle(
         self,
         interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ):
-        self.page = max(
-            0,
-            self.page - 1,
-        )
+        action: str,
+    ) -> None:
+        if action == "page":
+            return
 
-        embed, self.page, self.pages = (
-            self.cog.build_commands_embed(
-                self.page
+        new_page = self.page
+
+        if action == "previous":
+            new_page = max(
+                0,
+                self.page - 1,
             )
-        )
-
-        self.update_buttons()
+        elif action == "next":
+            new_page = min(
+                self.pages - 1,
+                self.page + 1,
+            )
 
         await interaction.response.edit_message(
-            embed=embed,
-            view=self,
+            content=None,
+            embed=None,
+            view=CommandPagesView(
+                self.cog,
+                self.owner_id,
+                new_page,
+            ),
         )
-
-    @discord.ui.button(
-        label="1/1",
-        style=discord.ButtonStyle.secondary,
-        disabled=True,
-    )
-    async def page_button(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ):
-        pass
-
-    @discord.ui.button(
-        label="Volgende",
-        emoji="▶️",
-        style=discord.ButtonStyle.primary,
-    )
-    async def next_button(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ):
-        self.page = min(
-            self.pages - 1,
-            self.page + 1,
-        )
-
-        embed, self.page, self.pages = (
-            self.cog.build_commands_embed(
-                self.page
-            )
-        )
-
-        self.update_buttons()
-
-        await interaction.response.edit_message(
-            embed=embed,
-            view=self,
-        )
-
 
 # =========================================================
 # SETUP
