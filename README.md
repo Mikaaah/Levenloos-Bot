@@ -15,4 +15,8 @@ De belangrijkste systemen zijn bereikbaar via duidelijke panelen:
 - `/health config` — Health Panel instellingen
 - `/reminder maak` — persoonlijke reminder
 
-Zie `DEPLOY_NOTES.md` voor deployment en `CODE_AUDIT.md` voor de revisiewijzigingen.
+Zie de [deploymentnotities](DEPLOY_NOTES.md) voor installatie en [code-audit](CODE_AUDIT.md) voor de revisiewijzigingen.
+
+## Bijdragen
+
+Bugs, ideeën en gerichte pull requests zijn welkom. Lees de [bijdragehandleiding](CONTRIBUTING.md) voor rapportage en testverwachtingen.
