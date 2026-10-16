@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  -
+    name: "Project README"
+    url: "https://github.com/Mikaaah/Levenloos-Bot#readme"
+    about: "Requirements, setup, known limitations and contribution guidance."
+  -
+    name: "Project status and support directory"
+    url: "https://github.com/Mikaaah/Mikaaah/blob/master/STATUS.md"
+    about: "Development status and links to the correct issue tracker."
+  -
+    name: "Creator's CurseForge projects"
+    url: "https://www.curseforge.com/members/mikaaah/projects"
+    about: "Browse the creator's published Minecraft projects; this repository may not have a CurseForge download."
