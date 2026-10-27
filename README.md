@@ -1,6 +1,6 @@
 # LEVENLOOS Discord Bot
 
-[Project status](https://github.com/Mikaaah/Mikaaah/blob/master/STATUS.md) · [Report a bug](https://github.com/Mikaaah/Levenloos-Bot/issues/new?template=bug_report.yml) · [Suggest a feature](https://github.com/Mikaaah/Levenloos-Bot/issues/new?template=feature_request.yml) · [Questions](https://github.com/Mikaaah/Levenloos-Bot/issues/new?template=question.yml) · [Creator's CurseForge projects](https://www.curseforge.com/members/mikaaah/projects)
+[Project status](https://github.com/Mikaaah/Mikaaah/blob/master/STATUS.md) · [Report a bug](https://github.com/Mikaaah/Levenloos-Bot/issues/new?template=bug_report.yml) · [Suggest a feature](https://github.com/Mikaaah/Levenloos-Bot/issues/new?template=feature_request.yml) · [Questions](https://github.com/Mikaaah/Levenloos-Bot/issues/new?template=question.yml)
 
 Discord.py 2.7.1 bot voor de LEVENLOOS server.
 
